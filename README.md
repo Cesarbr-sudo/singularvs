@@ -95,7 +95,7 @@ A complete **Controls Guide** is available from the in-game menu.
 
 ## Technical highlights
 
-- **Single file** of ~300 KB, no minification, no build step.
+- **Single file** of ~320 KB, no minification, no build step.
 - **Zero dependencies**: no framework, no library. Only Canvas 2D, WebGL2 and Web Audio — native browser APIs.
 - **Zero assets**: no image, no sound, no embedded font. All aesthetics is mathematics.
 - **On-demand generation**: nothing in the universe is stored. Every galaxy, star, planet and feature is recomputed by hash from integer coordinates. The "seed" is the only persisted data of the universe.

@@ -33,6 +33,23 @@ Language model from DeepSeek that **wrote most of the source code** of this proj
 
 According to the DeepSeek Terms of Use (Section 4.2), all rights to the *Outputs* (the generated code) are assigned to the user, and use for developing derivative products is explicitly permitted.
 
+### Iterative refinement (v1.2)
+
+Between v1.1 and v1.2, ten incremental patches were applied in a separate development session:
+
+- Hex seed parsing fix + full state reset in `setSeedFromText`.
+- Tidal locking threshold recalibrated (0.45 -> 0.20) to keep Mercury/Venus unlocked around Sol-like stars.
+- Robust gamepad selection by score (prefers `mapping='standard'`), tolerant to 2.4G keyboard reconnection.
+- Music scheduler skips suspended AudioContext (silences autoplay warnings).
+- Barred spiral galaxies forced to 2 arms; pitch and bar width synced between art and density.
+- Gas giants resized from 2-5 to 12-27 Earth radii (Neptune to Jupiter range).
+- Exploration radius scaled to 2.5x galaxy radius (A1) for coherent map/world proportions.
+- Multi-star systems now use a **binary tree** hierarchy (A-B, C-D orbits AB, etc.) instead of a linear chain.
+- P-type planet orbit assignment uses inner-separation threshold (regression fix).
+- Default `orbitTarget` for all planets (orphans = 0), relaxed ICEGIANT classification threshold.
+
+These refinements were performed under the author's direction and validation, with AI assistance for code generation and bug diagnosis.
+
 ## References and inspirations
 
 Projects and works that conceptually influenced Singularvs, without code or asset contribution:

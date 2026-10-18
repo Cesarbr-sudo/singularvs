@@ -93,7 +93,7 @@ Ha um **Guia de Controles** completo no proprio menu do jogo.
 
 ## Destaques tecnicos
 
-- **Um unico arquivo** de ~300 KB, sem minificacao, sem build step.
+- **Um unico arquivo** de ~320 KB, sem minificacao, sem build step.
 - **Zero dependencias**: nenhum framework, nenhuma biblioteca. Apenas Canvas 2D, WebGL2 e Web Audio -- APIs nativas do navegador.
 - **Zero assets**: nenhuma imagem, nenhum som, nenhuma fonte embutida. Toda estetica e matematica.
 - **Geracao on-demand**: nada do universo e armazenado. Cada galaxia, estrela, planeta e feature e recalculado por hash a partir de coordenadas inteiras. A "semente" (seed) e o unico dado persistido do universo.
