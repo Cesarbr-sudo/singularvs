@@ -152,6 +152,7 @@ const I18N_EN = {
     "Estepes áridas": "Arid steppes",
     "FECHAR": "CLOSE",
     "Filtro": "Filter",
+    "Fundido": "Molten",
     "Focar sistema": "Focus system",
     "GALÁXIA": "GALAXY",
     "GALÁXIA ": "GALAXY ",
@@ -207,6 +208,7 @@ const I18N_EN = {
     "MASSA (M⊕)": "MASS (M⊕)",
     "MEDIA": "MEDIUM",
     "MULTIPLO": "MULTIPLE",
+    "MOLTEN": "MOLTEN",
     "Mag": "Mag",
     "Mapa estelar": "Star map",
     "Mapa galáctico": "Galaxy map",
@@ -625,6 +627,8 @@ const PLANET_CLASSES = {
               seaLevel:0.35, snowLevel:0.92, tropicLatitude:0.05, icecapLatitude:0.90, heightTempGrad:0.3 },
   DWARF:    { label:'Planeta Anão', hasAtm:false, hasOcean:false, hasLife:false,
               seaLevel:0, snowLevel:0.5, tropicLatitude:0.5, icecapLatitude:1.0, heightTempGrad:0.5 },
+  MOLTEN:   { label:'Fundido',    hasAtm:true,  hasOcean:false, hasLife:false,
+              seaLevel:0, snowLevel:0, tropicLatitude:0.5, icecapLatitude:1.0, heightTempGrad:0 },
 };
 
 // Atmosferas por classe planetária (SE) e por tipo interno (compatibilidade)
@@ -686,12 +690,16 @@ function pickPlanetClass(type, tEq, atmosphere, size) {
     }
     return 'SELENA';
   }
-  // Super Terra: planetas grandes (>5) com condições Hestia-like
-  if (size >= 5 && tEq >= 260 && tEq <= 320 && (atmosphere.name === 'N₂-O₂' || atmosphere.name === 'N₂')) {
+  // Super Terra: planetas grandes com condições variadas (Hestia-like ou não)
+  // Faixa de temperatura ampliada (240–350 K) e CO₂ aceito — permite
+  // "Super Vênus" com atmosfera densa, mas em zona temperada.
+  if (size >= 5 && tEq >= 240 && tEq <= 350 &&
+      (atmosphere.name === 'N₂-O₂' || atmosphere.name === 'N₂' || atmosphere.name === 'CO₂')) {
     const hestiaRoll = ((size * 31 + Math.round(tEq)) % 100) / 100;
-    if (hestiaRoll < 0.65) return 'SUPERTERRA';
+    if (hestiaRoll < 0.80) return 'SUPERTERRA';
   }
   if (tEq >= 250 && tEq <= 320 && (atmosphere.name === 'N₂-O₂' || atmosphere.name === 'N₂')) return 'TERRA';
+  if (tEq > 750) return 'MOLTEN';   // oceano de magma
   if (tEq > 700) return 'DESERT';   // vulcânico seco
   if (tEq < 220) return 'ICEWORLD';
   if (atmosphere.name === 'H₂O') return 'OCEANIA';
@@ -1057,6 +1065,11 @@ const SWITCH_IN = 1.6, SWITCH_OUT = 1.75;   // histerese galáxia <-> estrelas (
 const MAP_PAN_INVERT = false;               // true = inverte o sentido do analógico esquerdo no mapa
 
 let logOpen = false, orbitState = null, telescopeState = null, surfaceState = null;
+let focusPanelScroll = 0;
+let focusPanelMaxScroll = 0;
+let focusPanelHover = false;
+let focusPanelVisible = true;
+let focusPanelToggleRect = { x: 0, y: 0, w: 0, h: 0 };
 let galaxyWarp = null;
 const galaxyCache = new Map();
 const galaxyArtCache = new Map();
@@ -1296,7 +1309,6 @@ function starDensityAt(wx, wy) {
     }
   } else if (type === 'irregular') {
     const blobs = galaxyBlobs(currentGalaxy);
-    // Aplica tilt/rotação como a arte (ctx.rotate(tiltAngle))
     const ca = Math.cos(currentGalaxy.tiltAngle || 0), sa = Math.sin(currentGalaxy.tiltAngle || 0);
     const rwx =  wx*ca + wy*sa;
     const rwy = -wx*sa + wy*ca;
@@ -1304,12 +1316,11 @@ function starDensityAt(wx, wy) {
     let d = 0;
     for (const b of blobs) {
       const dx = nwx - b.x, dy = nwy - b.y;
-      // Arte: gauss() tem std 0.333, então 2σ² = (b.s*0.333)²*2 = b.s²*0.22
       d += Math.exp(-(dx*dx + dy*dy) / (b.s * b.s * 0.22));
     }
-    // Corte suave que casa com a extensão visível dos blobs na arte
-    if (d < 0.05) return 0;
-    p = clamp((d - 0.05) * 1.7, 0.18, 0.95);
+    // Sem corte abrupto: a densidade cai suavemente até zero nas bordas.
+    // Multiplicamos d por 1.8 para manter a densidade alta no centro.
+    p = clamp(d * 1.8, 0.0, 0.95);
   } else if (type === 'lenticular') {
     const flat = currentGalaxy.flattening || 0.5;
     const ca = Math.cos(currentGalaxy.tiltAngle || 0), sa = Math.sin(currentGalaxy.tiltAngle || 0);
@@ -1438,6 +1449,8 @@ function makePlanets(rng, cx, cy, starRadius, temperature, starMass, isRogue, ga
     const atmList = safeAtmosphereList(type);
     const atmosphere = atmList[Math.floor(rng()*atmList.length)];
     const aAU = parseFloat(distanceAU);
+    const eccentricity = rng() * 0.35; // 0 a 0.35
+    const argPeriapsis = rng() * Math.PI * 2;
     const albedo = type === 'GASOSO' ? 0.45 : type === 'GELADO' ? 0.55 : 0.30;
     let tEq;
     if (isRogue) tEq = Math.max(2, temperature * 0.4 + (rng()-0.5)*60);
@@ -1584,6 +1597,7 @@ function makePlanets(rng, cx, cy, starRadius, temperature, starMass, isRogue, ga
     }
     // ============================================================
     planets.push({ distance, size, color, speed, phase, type, letter, epithet, distanceAU, rotation,
+      eccentricity, argPeriapsis,
       atmosphere, temperatureEq: Math.round(tEq), temperatureDay: Math.round(tDay), temperatureNight: Math.round(tNight),
       tidalLocked, habitability, moons, hasRings, ringColor, hasRivers,
       planetClass: pClass, seaLevel, snowLevel, tropicLat, icecapLat, heightTempGrad, vegColor,
@@ -1607,7 +1621,8 @@ function makePlanets(rng, cx, cy, starRadius, temperature, starMass, isRogue, ga
     const distanceAU = (distance/60).toFixed(2);
     const rotation = (epSeed / 0xFFFFFFFF) * 100;
     planets.push({ distance, size, color: PALETTE.comet, speed, phase, type: 'COMETA', letter, epithet,
-      distanceAU, rotation, atmosphere: { name: 'Vácuo', hab: 0, dens: 'Nula' },
+      distanceAU, rotation, eccentricity: 0, argPeriapsis: 0,
+      atmosphere: { name: 'Vácuo', hab: 0, dens: 'Nula' },
       temperatureEq: Math.round(temperature*0.15), temperatureDay: 0, temperatureNight: 0,
       tidalLocked: false, habitability: 0, moons: [], hasRings: false, ringColor: null, isComet: true, hasRivers: false,
       planetClass: 'SELENA', seaLevel:0, snowLevel:0.5, tropicLat:0.5, icecapLat:1, heightTempGrad:0,
@@ -1763,36 +1778,44 @@ function generateSystem(cx, cy) {
         starRadius: Math.max(2, Math.round(randInRange(rng, bdData.radiusRange)*4)),
         mass: randInRange(rng, bdData.massRange), temperature: Math.round(randInRange(rng, bdData.tempRange)),
         isBrownDwarf: true, isNeutronStar: false, isBlackHole: false,
-        separation: 6 + rng()*15, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
+        separation: 1.5 + rng()*4.5, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
     }
     if (isNS) {
       return { starType: 'NS', starColor: PALETTE.neutron,
         starRadius: 2, mass: 1.2 + rng()*1.0, temperature: 600000 + Math.round(rng()*400000),
         isBrownDwarf: false, isNeutronStar: true, isBlackHole: false,
-        separation: 6 + rng()*15, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
+        separation: 1.5 + rng()*4.5, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
     }
     if (isBH) {
       return { starType: 'BH', starColor: '#000000',
         starRadius: 4, mass: 5 + rng()*20, temperature: 0,
         isBrownDwarf: false, isNeutronStar: false, isBlackHole: true,
-        separation: 6 + rng()*15, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
+        separation: 1.5 + rng()*4.5, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
     }
     const cData = STAR_DATA[cType] || STAR_DATA.M;
     return { starType: cType, starColor: PALETTE.starColors[cType] || '#ff6600',
       starRadius: Math.max(2, Math.round(randInRange(rng, cData.radiusRange)*2)),
       mass: randInRange(rng, cData.massRange), temperature: Math.round(randInRange(rng, cData.tempRange)),
       isBrownDwarf: false, isNeutronStar: false, isBlackHole: false,
-      separation: 6 + rng()*15, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
+      separation: 1.5 + rng()*4.5, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
   }
 
-  // Construir a hierarquia
+  // Construir a hierarquia determinística (até 8 estrelas, usando rng())
   let companion = null;
-  if (hierarchyLevel >= 1) companion = makeCompanionStar(false);
-  if (hierarchyLevel >= 2 && companion) {
-    companion.companion = makeCompanionStar(false);
-    // Nível 3: companheiro do companheiro do companheiro
-    if (hierarchyLevel >= 3 && companion.companion) {
-      companion.companion.companion = makeCompanionStar(false);
+  let maxCompanions = 0;
+  if (hierarchyLevel === 1) maxCompanions = 1; // Binária (2 estrelas)
+  else if (hierarchyLevel === 2) maxCompanions = 2 + Math.floor(rng() * 2); // Trio/Quad (3-4 estrelas)
+  else if (hierarchyLevel === 3) maxCompanions = 4 + Math.floor(rng() * 4); // Múltipla (5-8 estrelas)
+
+  let currentComp = null;
+  for (let i = 0; i < maxCompanions; i++) {
+    const newComp = makeCompanionStar(false);
+    if (!companion) {
+      companion = newComp;
+      currentComp = companion;
+    } else {
+      currentComp.companion = newComp;
+      currentComp = newComp;
     }
   }
 
@@ -1802,7 +1825,7 @@ function generateSystem(cx, cy) {
     if (hierarchyLevel === 0) { p.orbitTarget = 'primary'; continue; }
     // P-type: planetas distantes (após o "critical distance")
     const sepAU = companion ? companion.separation : 10;
-    const pTypeThreshold = sepAU * 2.5;  // distância mínima para estabilidade
+    const pTypeThreshold = sepAU * 1.5;  // distância mínima para estabilidade
     if (parseFloat(p.distanceAU) > pTypeThreshold) {
       p.orbitTarget = 'barycenter';
     } else {
@@ -2011,6 +2034,35 @@ function computeSystemsForMap() {
   for (let i = 0; i < MAX; i++) sampled.push(unique[Math.floor(i*stride)]);
   return sampled;
 }
+function solveKepler(M, e) {
+  let E = M + e * Math.sin(M);
+  for (let i = 0; i < 3; i++) {
+    const dE = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    E -= dE;
+  }
+  return E;
+}
+
+function getOrbitXY(p, time) {
+  const e = p.eccentricity || 0;
+  const a = p.distance;
+  const M = (p.phase || 0) + time * 0.001 * p.speed;
+  const E = solveKepler(M, e);
+  // Posição local no plano orbital (foco = estrela)
+  const x_local = a * (Math.cos(E) - e);
+  const y_local = a * Math.sqrt(1 - e*e) * Math.sin(E);
+  // Mesma transformação que drawSystemVisual usa para a elipse:
+  // primeiro achatamento (0.4), depois rotação por argP.
+  const ys = y_local * 0.4;
+  const argP = p.argPeriapsis || 0;
+  const cosA = Math.cos(argP), sinA = Math.sin(argP);
+  return {
+    x: x_local * cosA - ys * sinA,
+    y: x_local * sinA + ys * cosA,
+    dist: Math.sqrt(x_local*x_local + y_local*y_local)
+  };
+}
+
 function getPlanetScreenPositions(sys, time) {
   const dist = Math.hypot(sys.worldX - camera.x, sys.worldY - camera.y);
   const geo = getSystemGeometry(sys, dist);
@@ -2020,7 +2072,7 @@ function getPlanetScreenPositions(sys, time) {
     const a = p.phase + time * 0.001 * p.speed;
     const r = p.distance * geo.orbitScale;
     out.push({ index:i, planet:p, px: geo.sx + Math.cos(a)*r, py: geo.sy + Math.sin(a)*r*0.4,
-      ps: Math.max(2, Math.round(p.size * geo.orbitScale)) });
+      ps: Math.max(4, Math.round(p.size * geo.orbitScale)) });
   }
   return out;
 }
@@ -2028,6 +2080,7 @@ function getPlanetScreenPositions(sys, time) {
 // FOCO / WARP / ÓRBITA
 function enterFocus(sys) {
   if (focusedSystem) return;
+  focusPanelScroll = 0;
   if (!sys || sys.isEmpty) return;
   savedShipState = { x:ship.x, y:ship.y, vx:ship.vx, vy:ship.vy, facing:ship.facing };
   focusedSystem = sys;
@@ -2471,6 +2524,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (mode === 'warp' || galaxyWarp) return;
   if (focusedSystem) {
+    if (k === 'tab') { e.preventDefault(); focusPanelVisible = !focusPanelVisible; playUIClick(); return; }
     if (k === 'escape' || k === 'backspace') exitFocus();
     if (k === 't' && focusedSystem.planets.length > 0 && !focusedSystem.isSupermassive) { enterTelescope(focusedSystem); return; }
     if (k === 'i' && focusedSystem.planets.length > 0) {
@@ -2511,6 +2565,11 @@ gameCanvas.addEventListener('mousemove', (e) => {
 });
 
 gameCanvas.addEventListener('wheel', (e) => {
+  if (focusedSystem && !mapOpen && focusPanelHover) {
+    e.preventDefault();
+    focusPanelScroll = Math.max(0, Math.min(focusPanelMaxScroll, focusPanelScroll + (e.deltaY > 0 ? 1 : -1)));
+    return;
+  }
   if (!mapOpen) return;
   e.preventDefault();
   applyMapZoom(e.deltaY > 0 ? (1/ZOOM_FACTOR) : ZOOM_FACTOR, mapMouse.x, mapMouse.y);
@@ -2538,6 +2597,14 @@ gameCanvas.addEventListener('click', (e) => {
   }
   if (mode === 'warp' || galaxyWarp) return;
   if (focusedSystem) {
+    // Toggle do painel (funciona mesmo em BH/Órfão)
+    if (sx >= focusPanelToggleRect.x && sx <= focusPanelToggleRect.x + focusPanelToggleRect.w &&
+        sy >= focusPanelToggleRect.y && sy <= focusPanelToggleRect.y + focusPanelToggleRect.h &&
+        focusPanelToggleRect.w > 0) {
+      focusPanelVisible = !focusPanelVisible;
+      playUIClick();
+      return;
+    }
     if (focusedSystem.isBlackHole || focusedSystem.isRogue) return;
     const now = performance.now();
     const positions = getPlanetScreenPositions(focusedSystem, now);
@@ -3073,10 +3140,12 @@ function drawSystemVisual(sys, dist, time) {
     gctx.beginPath(); gctx.arc(sx, sy, gr, 0, Math.PI*2); gctx.fill();
     gctx.fillStyle = col;
     gctx.beginPath(); gctx.arc(sx, sy, finalStarSize, 0, Math.PI*2); gctx.fill();
-    if (sys.companion) {
-      const c = sys.companion;
-      const a = c.angle + time*0.0008*c.speed;
-      const off = c.separation * (1 + focusBlend*1.5);
+    let cNode = sys.companion;
+    let cIdx = 1;
+    while (cNode) {
+      const c = cNode;
+      const a = c.angle + (cIdx * 0.8) + time*0.0008*c.speed;
+      const off = c.separation * (1 + focusBlend*1.5) * cIdx;
       const csx = sx + Math.cos(a)*off, csy = sy + Math.sin(a)*off*0.5;
       const csr = c.starRadius, cgr = csr*5+4;
       const ccol = colorMode === 'realistic' ? (PALETTE.starColors[c.starType] || c.starColor) : c.starColor;
@@ -3086,21 +3155,38 @@ function drawSystemVisual(sys, dist, time) {
       gctx.beginPath(); gctx.arc(csx, csy, cgr, 0, Math.PI*2); gctx.fill();
       gctx.fillStyle = ccol;
       gctx.beginPath(); gctx.arc(csx, csy, csr, 0, Math.PI*2); gctx.fill();
+      cNode = cNode.companion;
+      cIdx++;
     }
   }
   const showP = isFocused ? focusBlend > 0.05 : normalZoom > 0.4;
   if (showP && sys.planets.length > 0) {
     for (const p of sys.planets) {
-      const a = p.phase + time*0.001*p.speed;
-      const r = p.distance * geo.orbitScale;
-      const px = sx + Math.cos(a)*r, py = sy + Math.sin(a)*r*0.4;
-      const ps = Math.max(2, Math.round(p.size * geo.orbitScale));
+      const pos = getOrbitXY(p, time);
+      const px = sx + pos.x * geo.orbitScale, py = sy + pos.y * geo.orbitScale;
+      const ps = Math.max(4, Math.round(p.size * geo.orbitScale));
       if (isFocused && focusBlend > 0.4) {
         gctx.strokeStyle = 'rgba(255,140,26,0.15)'; gctx.lineWidth = 1;
-        gctx.beginPath(); gctx.ellipse(sx, sy, r, r*0.4, 0, 0, Math.PI*2); gctx.stroke();
+        gctx.save();
+        gctx.translate(sx, sy);
+        const e = p.eccentricity || 0;
+        const argP = p.argPeriapsis || 0;
+        gctx.rotate(argP);
+        const b = p.distance * Math.sqrt(1 - e*e);
+        gctx.beginPath(); gctx.ellipse(-p.distance * e * geo.orbitScale, 0, p.distance * geo.orbitScale, b * geo.orbitScale * 0.4, 0, 0, Math.PI*2); gctx.stroke();
+        gctx.restore();
       }
       if (p.type === 'COMETA') { drawComet(px, py, ps, time, Math.atan2(py-sy, px-sx)+Math.PI); continue; }
-      gctx.fillStyle = p.color;
+      // Halo de destaque (garante visibilidade)
+      if (isFocused && focusBlend > 0.4) {
+        gctx.fillStyle = 'rgba(255,255,255,0.15)';
+        gctx.beginPath(); gctx.arc(px, py, ps + 2, 0, Math.PI*2); gctx.fill();
+        gctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        gctx.lineWidth = 0.8;
+        gctx.beginPath(); gctx.arc(px, py, ps + 1, 0, Math.PI*2); gctx.stroke();
+      }
+
+gctx.fillStyle = p.color;
       gctx.beginPath(); gctx.arc(px, py, ps, 0, Math.PI*2); gctx.fill();
       if (p.tidalLocked && isFocused && focusBlend > 0.6) {
         gctx.fillStyle = 'rgba(255,120,40,0.5)';
@@ -3158,6 +3244,7 @@ function drawWarpEffects(time) {
 function getPlanetVisualKind(planet) {
   if (planet.type === 'COMETA') return 'COMETA';
   const pc = planet.planetClass;
+  if (pc === 'MOLTEN') return 'MOLTEN';
   if (pc === 'GASGIANT' || pc === 'ICEGIANT') return 'GASOSO';
   if (pc === 'ICEWORLD' || pc === 'TITAN') return 'GELADO';
   if (pc === 'TERRA') return 'TERRA';
@@ -3171,6 +3258,8 @@ function getRockySubtype(planet) {
   const pc = planet.planetClass || (planet.type === 'ROCHOSO' ? 'DESERT' : null);
   if (!pc) return null;
   if (pc === 'SELENA') return 'SELENA';
+  if (pc === 'MOLTEN') return 'MOLTEN';
+  if (pc === 'SUPERTERRA') return 'TEMPERADO';
   if (pc === 'DESERT') {
     if (planet.temperatureEq > 700) return 'VULCÂNICO';
     if (planet.temperatureEq > 400) return 'ÁRIDO';
@@ -3282,12 +3371,38 @@ function drawPlanetBody(planet, cx, cy, R, time) {
   glow.addColorStop(0, glowColor+'55'); glow.addColorStop(1, 'transparent');
   gctx.fillStyle = glow;
   gctx.beginPath(); gctx.arc(cx, cy, R*1.5, 0, Math.PI*2); gctx.fill();
+
+  // --- MOONS: Órbitas e luas do fundo (atrás do planeta) ---
+  const moons = planet.moons || [];
+  const moonOrbitR = R * 1.9;
+  const moonOrbitY = R * 0.55;
+  const moonAngles = [];
+  if (moons.length > 0) {
+    gctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    gctx.lineWidth = 0.5;
+    gctx.beginPath(); gctx.ellipse(cx, cy, moonOrbitR, moonOrbitY, 0, 0, Math.PI*2); gctx.stroke();
+  }
+  for (let mi = 0; mi < moons.length; mi++) {
+    const m = moons[mi];
+    const ang = m.angle + time * 0.001 * m.speed + mi * 0.8;
+    moonAngles.push(ang);
+    if (Math.sin(ang) < 0) {
+      const mx = cx + Math.cos(ang) * moonOrbitR;
+      const my = cy + Math.sin(ang) * moonOrbitY;
+      const mR = Math.max(1, R * 0.06 * m.size);
+      gctx.fillStyle = m.color || '#c8c0b0';
+      gctx.beginPath(); gctx.arc(mx, my, mR, 0, Math.PI*2); gctx.fill();
+      gctx.fillStyle = 'rgba(0,0,0,0.5)';
+      gctx.beginPath(); gctx.arc(mx + mR*0.2, my, mR*0.8, 0, Math.PI*2); gctx.fill();
+    }
+  }
+
   if (planet.hasRings) drawRingsOrbit(cx, cy, R, planet, true);
   gctx.save();
   gctx.beginPath(); gctx.arc(cx, cy, R, 0, Math.PI*2); gctx.clip();
   let baseColor;
   if (kind === 'TERRA') baseColor = '#1a3a5a';
-  else if (kind === 'OCEANICO') baseColor = '#6a4a2a';
+  else if (kind === 'OCEANICO') baseColor = '#1a3a5a';
   else if (kind === 'MOLTEN') baseColor = '#3a0a05';
   else baseColor = planet.color;
   gctx.fillStyle = baseColor;
@@ -3368,8 +3483,6 @@ function drawPlanetBody(planet, cx, cy, R, time) {
     features.push({ type:'spot', lat:(rng()-0.5)*0.6, lon: rng()*Math.PI*2, sizeX: R*0.20, sizeY: R*0.10 });
     } else if (kind === 'TERRA' || kind === 'OCEANICO') {
     const isTerra = (kind === 'TERRA');
-
-    // ---- 1. Continentes derivados (parcialmente) das placas tectônicas ----
     const continents = [];
     const plates = planet.plates || [];
     const contCount = isTerra ? (3 + Math.floor(rng()*3)) : (2 + Math.floor(rng()*2));
@@ -3390,10 +3503,8 @@ function drawPlanetBody(planet, cx, cy, R, time) {
         circles.push({ dLat:(rng()-0.5)*(cSize/R)*0.9, dLon:(rng()-0.5)*(cSize/R)*1.3, size: cSize*(0.5+rng()*0.5) });
       }
       continents.push({ cLat, cLon, cSize, circles });
-      features.push({ type: isTerra ? 'continent' : 'lake', cLat, cLon, circles });
+      features.push({ type: 'continent', cLat, cLon, circles });
     }
-
-    // Helper: retorna true se (lat, lon) cai sobre algum continente
     const isLand = (lat, lon) => {
       for (const cont of continents) {
         let dLat = lat - cont.cLat;
@@ -3406,49 +3517,7 @@ function drawPlanetBody(planet, cx, cy, R, time) {
       return false;
     };
 
-    // ---- 2. Rios: nascem em MONTANHAS e terminam em oceano ou lago ----
-    const riverPaths = [];
-    const mountainSeeds = features.filter(f => f.type === 'ridge');
-    const lakeSeeds = features.filter(f => f.type === 'lake');
-    const riverCount = 3 + Math.floor(rng()*5);
-    for (let i = 0; i < riverCount; i++) {
-      let startLat, startLon, found = false;
-      // Preferir nascer em uma cordilheira
-      if (mountainSeeds.length > 0 && rng() < 0.75) {
-        const m = mountainSeeds[Math.floor(rng()*mountainSeeds.length)];
-        const pt = m.pts[Math.floor(rng()*m.pts.length)];
-        startLat = pt.lat; startLon = pt.lon; found = true;
-      } else {
-        for (let t = 0; t < 30; t++) {
-          startLat = (rng()-0.5)*Math.PI*0.7;
-          startLon = rng()*Math.PI*2;
-          if (isLand(startLat, startLon)) { found = true; break; }
-        }
-      }
-      if (!found) continue;
-      const pts = [{lat:startLat, lon:startLon}];
-      let lat = startLat, lon = startLon;
-      // Fluxo: desce em direção ao equador e levemente para leste
-      for (let s = 0; s < 14; s++) {
-        lat += (rng()-0.5)*0.18 - 0.04 * Math.sign(lat);
-        lon += 0.12 + rng()*0.20;
-        // Termina ao encontrar oceano
-        if (!isLand(lat, lon)) break;
-        // Ou termina em um lago próximo
-        let hitLake = false;
-        for (const lake of lakeSeeds) {
-          const dLat = lat - lake.cLat, dLon = lon - lake.cLon;
-          if (Math.hypot(dLat, dLon) * R < lake.cSize * 0.6) { hitLake = true; break; }
-        }
-        if (hitLake) break;
-        pts.push({lat, lon});
-      }
-      if (pts.length >= 3) {
-        riverPaths.push(pts);
-        features.push({ type:'river', pts, width: R*(0.025 + rng()*0.02) });
-      }
-    }
-    // Lagos reais em Terra: pequenos corpos d'água cercados de terra
+    // ---- 2. Lagos reais ----
     if (isTerra) {
       const lakeTarget = planet.lakeCount || 0;
       let lakesPlaced = 0;
@@ -3464,7 +3533,81 @@ function drawPlanetBody(planet, cx, cy, R, time) {
       }
     }
 
-    // Helper: retorna true se (lat, lon) está perto de algum rio
+    // ---- 3. Cordilheiras ----
+    const nRidge = isTerra ? 12 : 7;
+    for (let i = 0; i < nRidge; i++) {
+      let lat = (rng()-0.5)*Math.PI*0.65, lon = rng()*Math.PI*2;
+      for (let t = 0; t < 16 && !isLand(lat, lon); t++) {
+        lat = (rng()-0.5)*Math.PI*0.65;
+        lon = rng()*Math.PI*2;
+      }
+      const segs = 6 + Math.floor(rng()*4);
+      const dLats = [], dLons = [];
+      for (let s = 0; s < segs; s++) {
+        dLats.push((rng()-0.5)*0.3);
+        dLons.push(0.20 + rng()*0.15);
+      }
+      const ridgeSize = R*(0.075 + rng()*0.040);
+      const volcSize = R*(0.055 + rng()*0.045);
+      const volcPhase = rng()*Math.PI*2;
+
+      let clat = lat, clon = lon;
+      const ridgePts = [{lat: clat, lon: clon}];
+      for (let s = 0; s < segs; s++) {
+        const nextLat = clat + dLats[s];
+        const nextLon = clon + dLons[s];
+        if (isLand(nextLat, nextLon)) {
+          clat = nextLat; clon = nextLon;
+          ridgePts.push({lat: clat, lon: clon});
+        } else {
+          break;
+        }
+      }
+      if (ridgePts.length >= 3) {
+        features.push({ type:'ridge', pts: ridgePts, size: ridgeSize });
+      } else {
+        features.push({ type:'volcanic_island', lat, lon, size: volcSize, phase: volcPhase });
+      }
+    }
+
+    // ---- 4. Rios ----
+    const riverPaths = [];
+    const mountainSeeds = features.filter(f => f.type === 'ridge');
+    const lakeSeeds = features.filter(f => f.type === 'lake');
+    const riverCount = 3 + Math.floor(rng()*5);
+    for (let i = 0; i < riverCount; i++) {
+      let startLat, startLon, found = false;
+      if (mountainSeeds.length > 0 && rng() < 0.75) {
+        const m = mountainSeeds[Math.floor(rng()*mountainSeeds.length)];
+        const pt = m.pts[Math.floor(rng()*m.pts.length)];
+        startLat = pt.lat; startLon = pt.lon; found = true;
+      } else {
+        for (let t = 0; t < 30; t++) {
+          startLat = (rng()-0.5)*Math.PI*0.7;
+          startLon = rng()*Math.PI*2;
+          if (isLand(startLat, startLon)) { found = true; break; }
+        }
+      }
+      if (!found) continue;
+      const pts = [{lat:startLat, lon:startLon}];
+      let lat = startLat, lon = startLon;
+      for (let s = 0; s < 14; s++) {
+        lat += (rng()-0.5)*0.18 - 0.04 * Math.sign(lat);
+        lon += 0.12 + rng()*0.20;
+        if (!isLand(lat, lon)) break;
+        let hitLake = false;
+        for (const lake of lakeSeeds) {
+          const dLat = lat - lake.cLat, dLon = lon - lake.cLon;
+          if (Math.hypot(dLat, dLon) * R < lake.cSize * 0.6) { hitLake = true; break; }
+        }
+        if (hitLake) break;
+        pts.push({lat, lon});
+      }
+      if (pts.length >= 3) {
+        riverPaths.push(pts);
+        features.push({ type:'river', pts, width: R*(0.025 + rng()*0.02) });
+      }
+    }
     const nearRiver = (lat, lon) => {
       for (const pts of riverPaths) {
         for (const pt of pts) {
@@ -3478,43 +3621,7 @@ function drawPlanetBody(planet, cx, cy, R, time) {
       return false;
     };
 
-    // ---- 3. Cordilheiras (terra, evitando rios) ou ilhas vulcânicas (água) ----
-    const nRidge = isTerra ? 12 : 7;
-    for (let i = 0; i < nRidge; i++) {
-      // Procura latitude/longitude em terra para garantir visibilidade
-      let lat = (rng()-0.5)*Math.PI*0.65, lon = rng()*Math.PI*2;
-      for (let t = 0; t < 16 && !isLand(lat, lon); t++) {
-        lat = (rng()-0.5)*Math.PI*0.65;
-        lon = rng()*Math.PI*2;
-      }
-      // Gera TODOS os rng primeiro (preserva sequência determinística)
-      const segs = 6 + Math.floor(rng()*4);
-      const ridgePts = [];
-      let clat = lat, clon = lon;
-      for (let s = 0; s < segs; s++) {
-        ridgePts.push({lat: clat, lon: clon});
-        clat += (rng()-0.5)*0.3;
-        clon += 0.20 + rng()*0.15;
-      }
-      const ridgeSize = R*(0.075 + rng()*0.040);
-      const volcSize = R*(0.055 + rng()*0.045);
-      const volcPhase = rng()*Math.PI*2;
-
-      // Aceita a crista se ao menos METADE dos pontos cair em terra.
-      // Filtra apenas os pontos que caem sobre rios (deixa o resto intacto).
-      let landPts = 0;
-      for (const pt of ridgePts) if (isLand(pt.lat, pt.lon)) landPts++;
-      if (landPts >= Math.max(2, Math.floor(ridgePts.length * 0.5))) {
-        const filtered = ridgePts.filter(pt => !nearRiver(pt.lat, pt.lon));
-        if (filtered.length >= 2) {
-          features.push({ type:'ridge', pts: filtered, size: ridgeSize });
-        }
-      } else {
-        features.push({ type:'volcanic_island', lat, lon, size: volcSize, phase: volcPhase });
-      }
-    }
-
-    // ---- 4. Vegetação (apenas em terra, evitando rios e montanhas) ----
+    // ---- 5. Vegetação ----
     if (isTerra) {
       for (let i = 0; i < 24; i++) {
         const lat = (rng()-0.5)*Math.PI*0.80, lon = rng()*Math.PI*2;
@@ -3523,8 +3630,6 @@ function drawPlanetBody(planet, cx, cy, R, time) {
         }
       }
     }
-
-    // ---- 5. Nuvens (só em Terra) ----
     if (isTerra) {
       for (let i = 0; i < 6; i++) features.push({ type:'cloud',
         lat:(rng()-0.5)*Math.PI*0.85, lon: rng()*Math.PI*2,
@@ -3795,6 +3900,34 @@ function drawPlanetBody(planet, cx, cy, R, time) {
   gctx.fillStyle = grad; gctx.fillRect(cx-R, cy-R, R*2, R*2);
   gctx.restore();
   if (planet.hasRings) drawRingsOrbit(cx, cy, R, planet, false);
+
+  // --- MOONS: Luas da frente (na frente do planeta) ---
+  for (let mi = 0; mi < moons.length; mi++) {
+    const m = moons[mi];
+    const ang = moonAngles[mi];
+    if (Math.sin(ang) >= 0) {
+      const mx = cx + Math.cos(ang) * moonOrbitR;
+      const my = cy + Math.sin(ang) * moonOrbitY;
+      const mR = Math.max(1, R * 0.06 * m.size);
+      gctx.fillStyle = m.color || '#c8c0b0';
+      gctx.beginPath(); gctx.arc(mx, my, mR, 0, Math.PI*2); gctx.fill();
+      gctx.fillStyle = 'rgba(0,0,0,0.5)';
+      gctx.beginPath(); gctx.arc(mx + mR*0.2, my, mR*0.8, 0, Math.PI*2); gctx.fill();
+    }
+  }
+
+  // Rim Light (Brilho atmosférico)
+  if (planet.atmosphere && planet.atmosphere.dens !== 'Nula') {
+    const atmCol = (planet.atmosphere.name === 'N₂-O₂' || planet.atmosphere.name === 'N₂') ? '160,200,255' : '255,180,100';
+    const rim = gctx.createRadialGradient(cx, cy, R*0.85, cx, cy, R*1.05);
+    rim.addColorStop(0, 'rgba('+atmCol+',0)');
+    rim.addColorStop(0.8, 'rgba('+atmCol+',0)');
+    rim.addColorStop(0.95, 'rgba('+atmCol+',0.25)');
+    rim.addColorStop(1, 'rgba('+atmCol+',0)');
+    gctx.fillStyle = rim;
+    gctx.beginPath(); gctx.arc(cx, cy, R*1.05, 0, Math.PI*2); gctx.fill();
+  }
+
   const borderColor = (kind === 'TERRA') ? '#4a8aa8' : planet.color;
   gctx.strokeStyle = borderColor; gctx.lineWidth = 1;
   gctx.beginPath(); gctx.arc(cx, cy, R, 0, Math.PI*2); gctx.stroke();
@@ -4280,30 +4413,57 @@ function drawSystemLabel(sys, dist, time) {
   const showP = isFocused ? focusBlend > 0.05 : normalZoom > 0.4;
   if (showP && isFocused && focusBlend > 0.6 && !sys.isBlackHole && !sys.isRogue) {
     for (const p of sys.planets) {
-      const a = p.phase + time*0.001*p.speed;
-      const r = p.distance * geo.orbitScale;
-      const px = sx + Math.cos(a)*r, py = sy + Math.sin(a)*r*0.4;
-      const ps = Math.max(2, Math.round(p.size * geo.orbitScale));
-      uctx.font = '5px "DejaVu Sans Mono", monospace';
+      const pos = getOrbitXY(p, time);
+      const px = sx + pos.x * geo.orbitScale, py = sy + pos.y * geo.orbitScale;
+      const ps = Math.max(4, Math.round(p.size * geo.orbitScale));
+      uctx.font = 'bold 6px "DejaVu Sans Mono", monospace';
       uctx.textAlign = 'center';
-      uctx.fillStyle = PALETTE.hud;
-      uctx.fillText(p.letter.toUpperCase() + ' ' + p.epithet, px, py - ps - 2);
+      uctx.fillStyle = PALETTE.near[3];
+      uctx.fillText(p.letter.toUpperCase() + ' ' + p.epithet, px, py - ps - 5);
     }
   }
 }
 
 function drawFocusPanel() {
-  if (!focusedSystem || focusBlend < 0.5) return;
+  if (!focusedSystem || focusBlend < 0.5) {
+    focusPanelToggleRect = { x: 0, y: 0, w: 0, h: 0 };
+    return;
+  }
   const sys = focusedSystem;
+
+  // Estado fechado: mostrar só o botão ☰ flutuante
+  if (!focusPanelVisible) {
+    const btnX = BASE_W - 16, btnY = 34;
+    uctx.fillStyle = 'rgba(0,0,0,0.75)';
+    uctx.fillRect(btnX, btnY, 12, 12);
+    uctx.strokeStyle = 'rgba(255,140,26,0.8)'; uctx.lineWidth = 0.5;
+    uctx.strokeRect(btnX+0.5, btnY+0.5, 11, 11);
+    uctx.fillStyle = PALETTE.hud;
+    uctx.font = 'bold 9px "DejaVu Sans Mono", monospace';
+    uctx.textAlign = 'center';
+    uctx.fillText('☰', btnX+6, btnY+9);
+    focusPanelToggleRect = { x: btnX, y: btnY, w: 12, h: 12 };
+    return;
+  }
+
   const isSMBH = sys.isSupermassive, isBH = sys.isBlackHole && !isSMBH, isRG = sys.isRogue;
   const PANEL_W = 118;
   let HEADER_H = isSMBH ? 66 : isBH ? 60 : isRG ? 48 : 48;
   const PLANET_H = 12, PADDING_BOT = 6;
-  const planetsCount = Math.max(1, sys.planets.length);
-  const PANEL_H = HEADER_H + ((isSMBH || isBH || isRG) && sys.planets.length === 0 ? 6 : planetsCount*PLANET_H) + PADDING_BOT;
+
+  const maxVisible = Math.floor((BASE_H - 34 - HEADER_H - PADDING_BOT) / PLANET_H);
+  const totalPlanets = sys.planets.length;
+  focusPanelMaxScroll = Math.max(0, totalPlanets - maxVisible);
+  if (focusPanelScroll > focusPanelMaxScroll) focusPanelScroll = focusPanelMaxScroll;
+
+  const visibleCount = Math.min(totalPlanets, maxVisible);
+  const PANEL_H = HEADER_H + (visibleCount > 0 ? visibleCount * PLANET_H : 6) + PADDING_BOT;
   const x = BASE_W - PANEL_W - 4;
   const y = 34;
   const finalY = (y + PANEL_H > BASE_H - 10) ? (BASE_H - PANEL_H - 10) : y;
+
+  focusPanelHover = (mapMouse.x >= x && mapMouse.x <= x + PANEL_W && mapMouse.y >= finalY && mapMouse.y <= finalY + PANEL_H);
+
   uctx.fillStyle = 'rgba(0,0,0,0.80)'; uctx.fillRect(x, finalY, PANEL_W, PANEL_H);
   uctx.strokeStyle = isSMBH ? 'rgba(255,200,120,0.85)' : isBH ? 'rgba(255,80,30,0.75)' : isRG ? 'rgba(150,170,190,0.6)' : 'rgba(255,140,26,0.6)';
   uctx.lineWidth = 0.5; uctx.strokeRect(x+0.5, finalY+0.5, PANEL_W-1, PANEL_H-1);
@@ -4325,22 +4485,31 @@ function drawFocusPanel() {
     uctx.fillText('Classe ' + sys.starType + sys.lumClass + ' · ' + sys.temperature + 'K', x+3, cy); cy += 6;
     uctx.fillText('Massa  ' + sys.mass.toFixed(2) + ' M☉ · R ' + sys.radius.toFixed(2), x+3, cy); cy += 6;
     uctx.fillText('Planetas: ' + sys.planets.length, x+3, cy); cy += 6;
-    // Hierarquia (sistemas múltiplos)
     if (sys.hierarchyLevel && sys.hierarchyLevel > 0) {
       let hInfo = 'Sist. ' + ['single','binário','triplo','múltiplo'][Math.min(3, sys.hierarchyLevel)];
-      if (sys.companion) {
-        let cTag = sys.companion.starType;
-        if (sys.companion.isBrownDwarf) cTag = 'BD';
-        else if (sys.companion.isNeutronStar) cTag = 'NS';
-        else if (sys.companion.isBlackHole) cTag = 'BH';
-        hInfo += ' +' + cTag;
+      let cNode = sys.companion;
+      let cCount = 0;
+      let cTags = new Set();
+      while (cNode) {
+        cCount++;
+        let cTag = cNode.starType;
+        if (cNode.isBrownDwarf) cTag = 'BD';
+        else if (cNode.isNeutronStar) cTag = 'NS';
+        else if (cNode.isBlackHole) cTag = 'BH';
+        cTags.add(cTag);
+        cNode = cNode.companion;
       }
+      if (cCount > 0) hInfo += ' +' + cCount + ' (' + Array.from(cTags).join(',') + ')';
       uctx.fillStyle = '#ffd070';
       uctx.fillText(hInfo, x+3, cy); cy += 6;
     }
   }
+
   let yy = finalY + HEADER_H + 4;
-  for (let i = 0; i < sys.planets.length; i++) {
+  const startIdx = focusPanelScroll;
+  const endIdx = Math.min(totalPlanets, startIdx + visibleCount);
+
+  for (let i = startIdx; i < endIdx; i++) {
     const p = sys.planets[i];
     uctx.fillStyle = p.color;
     uctx.beginPath(); uctx.arc(x+6, yy-2, 1.6, 0, Math.PI*2); uctx.fill();
@@ -4351,6 +4520,26 @@ function drawFocusPanel() {
     uctx.fillText(p.epithet + ' ' + p.distanceAU + 'UA', x+11, yy+5);
     yy += PLANET_H;
   }
+
+  if (totalPlanets > maxVisible) {
+    uctx.fillStyle = '#ffb347';
+    uctx.font = 'bold 8px "DejaVu Sans Mono", monospace';
+    uctx.textAlign = 'center';
+    if (focusPanelScroll > 0) uctx.fillText('▲', x + PANEL_W/2, finalY + HEADER_H);
+    if (focusPanelScroll < focusPanelMaxScroll) uctx.fillText('▼', x + PANEL_W/2, finalY + PANEL_H - 2);
+  }
+
+  // Botão [×] para esconder o painel
+  const btnX = x + PANEL_W - 10, btnY = finalY + 2;
+  uctx.fillStyle = 'rgba(0,0,0,0.5)';
+  uctx.fillRect(btnX, btnY, 8, 8);
+  uctx.strokeStyle = 'rgba(255,140,26,0.6)'; uctx.lineWidth = 0.5;
+  uctx.strokeRect(btnX+0.5, btnY+0.5, 7, 7);
+  uctx.fillStyle = PALETTE.hud;
+  uctx.font = 'bold 7px "DejaVu Sans Mono", monospace';
+  uctx.textAlign = 'center';
+  uctx.fillText('×', btnX+4, btnY+6);
+  focusPanelToggleRect = { x: btnX, y: btnY, w: 8, h: 8 };
 }
 
 // MAPA UNIFICADO
@@ -5490,6 +5679,9 @@ function debugSystemStats() {
     hierarchyLevels: [0,0,0,0],
     pType: 0, sType: 0,
     examples: { BD:null, NS:null, BH:null, quadPlus:null },
+    planetClasses: {},
+    superEarthCount: 0,
+    superEarthExamples: [],
   };
   for (let i = 0; i < N; i++) {
     const dx = Math.round((rng() - 0.5) * cellR * 2);
@@ -5501,16 +5693,17 @@ function debugSystemStats() {
     stats.total++;
     const lvl = sys.hierarchyLevel || 0;
     stats.hierarchyLevels[lvl]++;
+    let totalStars = 1;
+    let cNode = sys.companion;
+    while (cNode) { totalStars++; cNode = cNode.companion; }
+    stats.starCounts = stats.starCounts || {};
+    stats.starCounts[totalStars] = (stats.starCounts[totalStars] || 0) + 1;
+
     if (lvl === 0) stats.single++;
     else if (lvl === 1) stats.binary++;
     else if (lvl === 2) stats.triple++;
     else if (lvl === 3) {
-      // Verificar quantos companheiros tem
-      let count = 1;
-      if (sys.companion) count++;
-      if (sys.companion && sys.companion.companion) count++;
-      if (sys.companion && sys.companion.companion && sys.companion.companion.companion) count++;
-      if (count >= 5) stats.multi5plus++;
+      if (totalStars >= 5) stats.multi5plus++;
       else stats.quad++;
     }
     // Contar tipo de companheiro
@@ -5528,10 +5721,20 @@ function debugSystemStats() {
       if (c.isBlackHole && !stats.examples.BH) stats.examples.BH = sys.name + ' (' + sys.starType + lvl + ' + BH)';
       if (lvl >= 3 && !stats.examples.quadPlus) stats.examples.quadPlus = sys.name;
     }
-    // Contar orbitTarget dos planetas
+    // Contar orbitTarget dos planetas E classes planetárias
     for (const p of sys.planets || []) {
       if (p.orbitTarget === 'barycenter') stats.pType++;
       else if (p.orbitTarget === 'primary' || p.orbitTarget === 'companionA') stats.sType++;
+      const pc = p.planetClass || p.type || '?';
+      stats.planetClasses[pc] = (stats.planetClasses[pc] || 0) + 1;
+      if (pc === 'SUPERTERRA') {
+        stats.superEarthCount++;
+        if (stats.superEarthExamples.length < 3) {
+          stats.superEarthExamples.push(sys.name + '-' + p.letter +
+            ' (' + p.temperatureEq + 'K, ' + (p.atmosphere ? p.atmosphere.name : '?') +
+            ', size ' + p.size + ')');
+        }
+      }
     }
   }
   const pct = (v) => (100 * v / Math.max(1, stats.total)).toFixed(2) + '%';
@@ -5541,6 +5744,10 @@ function debugSystemStats() {
   console.log('  Binária (2 estrelas): ' + stats.hierarchyLevels[1] + '  (' + pct(stats.hierarchyLevels[1]) + ')');
   console.log('  Trio/Quad (3-4):      ' + stats.hierarchyLevels[2] + '  (' + pct(stats.hierarchyLevels[2]) + ')');
   console.log('  Multi 5+ (até 8):     ' + stats.hierarchyLevels[3] + '  (' + pct(stats.hierarchyLevels[3]) + ')');
+  console.log('%cDistribuição Exata de Estrelas:', 'color:#ff9060');
+  for (const [num, count] of Object.entries(stats.starCounts || {}).sort((a,b) => a[0]-b[0])) {
+    console.log('  ' + num + ' estrelas: ' + count + ' sistemas');
+  }
   console.log('%cTipos de companheiro:', 'color:#a8c8ff');
   const ct = stats.companionTypes;
   console.log('  M:' + ct.M + '  K:' + ct.K + '  G:' + ct.G + '  F:' + ct.F + '  A:' + ct.A);
@@ -5553,11 +5760,17 @@ function debugSystemStats() {
   console.log('  Quad+: ' + (stats.examples.quadPlus || '— nenhum na amostra'));
   console.log('%cÓrbitas dos planetas:', 'color:#a8c8ff');
   console.log('  P-type (baricentro): ' + stats.pType + '  |  S-type (estrela): ' + stats.sType);
+  console.log('%cClasses planetárias (amostra):', 'color:#a8c8ff');
+  const pcEntries = Object.entries(stats.planetClasses).sort((a,b) => b[1]-a[1]);
+  for (const [k, v] of pcEntries) console.log('  ' + k + ': ' + v);
+  console.log('%cSuper Terras encontradas: ' + stats.superEarthCount, 'color:#60ff90;font-weight:bold');
+  for (const ex of stats.superEarthExamples) console.log('  Ex: ' + ex);
   console.log('%c=== FIM ===', 'color:#ffe080;font-weight:bold');
   // Também mostra no HUD
   debug._f6Report = 'F6: ' + stats.total + ' sist · ' +
     'BD:' + ct.BD + ' NS:' + ct.NS + ' BH:' + ct.BH +
-    ' · bin:' + stats.hierarchyLevels[1] + ' trio:' + stats.hierarchyLevels[2] + ' 5+:' + stats.hierarchyLevels[3];
+    ' · bin:' + stats.hierarchyLevels[1] + ' trio:' + stats.hierarchyLevels[2] +
+    ' multi:' + stats.hierarchyLevels[3] + ' · ST:' + stats.superEarthCount;
   debug._f6Until = performance.now() + 15000;
 }
 
@@ -5751,8 +5964,8 @@ const GamepadManager = {
 
       // PlanetInfo (aberto por R3 em foco/órbita)
       if (planetInfo.open) {
-        if (DL || LB) { planetInfo.tab = (planetInfo.tab + planetInfo.tabs.length - 1) % planetInfo.tabs.length; playUIClick(); }
-        if (DR || RB) { planetInfo.tab = (planetInfo.tab + 1) % planetInfo.tabs.length; playUIClick(); }
+        if (DLe || LB) { planetInfo.tab = (planetInfo.tab + planetInfo.tabs.length - 1) % planetInfo.tabs.length; playUIClick(); }
+        if (DRe || RB) { planetInfo.tab = (planetInfo.tab + 1) % planetInfo.tabs.length; playUIClick(); }
         if (B || X)   { planetInfo.open = false; playUIClick(); }
         return;
       }
@@ -5938,6 +6151,11 @@ const GamepadManager = {
 
       // Focado em sistema
       if (focusedSystem) {
+        if (L3) { focusPanelVisible = !focusPanelVisible; playUIClick(); }
+        if (focusPanelVisible) {
+          if (DUe) { focusPanelScroll = Math.max(0, focusPanelScroll - 1); }
+          if (DDe) { focusPanelScroll = Math.min(focusPanelMaxScroll, focusPanelScroll + 1); }
+        }
         if (B) { exitFocus(); return; }
         if (X && focusedSystem.planets.length > 0 && !focusedSystem.isSupermassive) { enterTelescope(focusedSystem); return; }
         // Y orbita o primeiro planeta
