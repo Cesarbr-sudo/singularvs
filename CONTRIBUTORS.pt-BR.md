@@ -45,6 +45,23 @@ Modelo de linguagem da DeepSeek que **escreveu a maior parte do codigo-fonte** d
 De acordo com os Termos de Uso da DeepSeek (Secao 4.2), todos os direitos sobre os *Outputs* (o codigo gerado) sao atribuidos ao usuario, e o uso para desenvolvimento de produtos derivados e explicitamente permitido.
 
 
+### Refinamento iterativo (v1.2)
+
+Entre v1.1 e v1.2, dez patches incrementais foram aplicados em sessao separada de desenvolvimento:
+
+- Correcao do parsing de semente hex + reset completo de estado em `setSeedFromText`.
+- Threshold de tidal locking recalibrado (0.45 -> 0.20) para manter Mercurio/Venus destravados em estrelas tipo Sol.
+- Selecao robusta de gamepad por score (prefere `mapping='standard'`), tolerante a reconexao de teclado 2.4G.
+- Scheduler de musica ignora AudioContext suspenso (silencia warnings de autoplay).
+- Espirais barradas forcadas a 2 bracos; pitch e largura da barra sincronizados entre arte e densidade.
+- Gasosos redimensionados de 2-5 para 12-27 raios terrestres (faixa Netuno a Jupiter).
+- Raio de exploracao escalado para 2.5x o raio da galaxia (A1) para proporcoes coerentes entre mapa e mundo.
+- Sistemas multiplos agora usam **arvore binaria** (A-B, C-D orbita AB, etc.) em vez de cadeia linear.
+- Atribuicao de orbita P-type usa threshold de separacao interna (correcao de regressao).
+- `orbitTarget` default para todos os planetas (orfaos = 0), threshold de ICEGIANT relaxado.
+
+Estes refinamentos foram realizados sob direcao e validacao do autor, com assistencia de IA para geracao de codigo e diagnostico de bugs.
+
 ## Referencias e inspiracoes
 
 Projetos e obras que influenciaram conceitualmente o Singularvs, sem contribuicao de codigo ou assets:
