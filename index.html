@@ -675,7 +675,8 @@ function vegetationColorFor(tempK) {
 // Classes planetárias para cada tipo interno (ROCHOSO/GASOSO/GELADO)
 function pickPlanetClass(type, tEq, atmosphere, size) {
   if (type === 'GASOSO') {
-    return (size <= 4 && tEq < 200) ? 'ICEGIANT' : 'GASGIANT';
+    // Como size agora é 12-27, gelados são os menores (12-16) e frios.
+    return (size <= 17 && tEq < 250) ? 'ICEGIANT' : 'GASGIANT';
   }
   if (type === 'GELADO') {
     if (atmosphere.name.indexOf('CH₄') !== -1 && atmosphere.dens !== 'Nula') return 'TITAN';
@@ -719,8 +720,14 @@ function hashStringToSeed(str) {
 try {
   const saved = localStorage.getItem(SEED_KEY);
   if (saved) {
-    if (saved.startsWith('0x') || /^\d+$/.test(saved)) CURRENT_SEED = parseInt(saved, 10) >>> 0 || DEFAULT_SEED;
-    else { CURRENT_SEED_TEXT = saved; CURRENT_SEED = hashStringToSeed(saved); }
+    if (saved.startsWith('0x') || saved.startsWith('0X')) {
+      CURRENT_SEED = (parseInt(saved, 16) >>> 0) || DEFAULT_SEED;
+    } else if (/^\d+$/.test(saved)) {
+      CURRENT_SEED = (parseInt(saved, 10) >>> 0) || DEFAULT_SEED;
+    } else {
+      CURRENT_SEED_TEXT = saved;
+      CURRENT_SEED = hashStringToSeed(saved);
+    }
   }
 } catch (e) {}
 function setSeedFromText(txt) {
@@ -731,13 +738,72 @@ function setSeedFromText(txt) {
   else if (/^\d+$/.test(txt)) CURRENT_SEED = (parseInt(txt, 10) >>> 0) || DEFAULT_SEED;
   else CURRENT_SEED = hashStringToSeed(txt);
   try { localStorage.setItem(SEED_KEY, txt || String(DEFAULT_SEED)); } catch (e) {}
-  systemCache.clear(); galaxyCache.clear(); galaxyRawCache.clear(); galaxyArtCache.clear(); artPixels = 0;
-  currentGalaxy = null;
-  visited.clear(); discoveryLog = []; customNames = {}; customNotes = {};
-  saveVisited(); saveLog(); saveNames(); saveNotes();
-  
 
-initGalaxy();
+  // ---- Reset de caches em memória ----
+  systemCache.clear();
+  galaxyCache.clear();
+  galaxyRawCache.clear();
+  galaxyArtCache.clear();
+  galaxyBlobsCache.clear();
+  artPixels = 0;
+  _givMemo = { k: '', out: [] };
+  _sysMapMemo = { key: '', out: [] };
+  currentGalaxy = null;
+
+  // ---- Reset do estado persistido ----
+  visited.clear();
+  discoveryLog = [];
+  customNames = {};
+  customNotes = {};
+  waypointKey = null;
+  saveVisited(); saveLog(); saveNames(); saveNotes(); saveWaypoint();
+
+  // ---- Reset do estado interativo (evita travar em modo órfão) ----
+  focusedSystem = null;
+  orbitState = null;
+  telescopeState = null;
+  surfaceState = null;
+  savedShipState = null;
+  warp = null;
+  galaxyWarp = null;
+  warpFlash = 0;
+  mapOpen = false;
+  logOpen = false;
+  if (typeof starBrowser !== 'undefined' && starBrowser) starBrowser.open = false;
+  if (typeof planetInfo !== 'undefined' && planetInfo) planetInfo.open = false;
+  focusPanelScroll = 0;
+  focusPanelMaxScroll = 0;
+  focusPanelVisible = true;
+  focusPanelHover = false;
+  focusBlend = 0;
+  visibleList.length = 0;
+  lastNearest = { sys: null, dist: Infinity };
+  mapSelected = null;
+  mapHovered = null;
+  selectedGalaxy = null;
+  hoveredGalaxy = null;
+
+  // ---- Cria a nova galáxia e reposiciona a nave com segurança ----
+  initGalaxy();
+  if (currentGalaxy) {
+    const er = explorationRadius();
+    const ang = Math.PI * 0.25;
+    const d = er * 0.40;
+    ship.x = Math.cos(ang) * d;
+    ship.y = Math.sin(ang) * d;
+    ship.vx = 0; ship.vy = 0;
+    camera.x = ship.x; camera.y = ship.y;
+    galaxyCenter.x = currentGalaxy.ux;
+    galaxyCenter.y = currentGalaxy.uy;
+  } else {
+    ship.x = 0; ship.y = 0; ship.vx = 0; ship.vy = 0;
+    camera.x = 0; camera.y = 0;
+  }
+
+  // ---- Ajusta trilha musical ----
+  if (typeof Music !== 'undefined' && Music.ctx) {
+    Music.setTrack(screen === 'playing' ? 'flight' : 'menu');
+  }
 }
 
 // ============================================================
@@ -762,6 +828,30 @@ function ensureAudio() {
   if (audioCtx.state === 'suspended') audioCtx.resume();
   audioReady = true; return true;
 }
+// ---- Resume-on-gesture global ----
+// O Chromium suspende o AudioContext quando window.prompt() abre e
+// bloqueia .resume() sem gesto do usuário. Registramos listeners
+// globais (uma única vez) que resumem o contexto assim que houver
+// qualquer interação. Isso silencia os warnings "AudioContext was
+// prevented from starting automatically" após o primeiro gesto.
+let _gestureListenerAttached = false;
+function _gestureResumeAudio() {
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+}
+function _attachGestureListenerOnce() {
+  if (_gestureListenerAttached) return;
+  _gestureListenerAttached = true;
+  try {
+    document.addEventListener('pointerdown', _gestureResumeAudio, { passive: true });
+    document.addEventListener('keydown',     _gestureResumeAudio, { passive: true });
+    document.addEventListener('touchstart',  _gestureResumeAudio, { passive: true });
+    window.addEventListener('gamepadconnected', _gestureResumeAudio);
+  } catch (e) {}
+}
+_attachGestureListenerOnce();
+
 function setVolume(v) { volumeLevel = Math.max(0, Math.min(1, v)); if (masterGain) masterGain.gain.value = volumeLevel; try { localStorage.setItem(VOLUME_KEY, String(volumeLevel)); } catch (e) {} volumeHintUntil = performance.now() + 2000; }
 function setMusic(on) { musicEnabled = on; try { localStorage.setItem(MUSIC_KEY, on ? '1' : '0'); } catch (e) {} if (Music.ctx) { if (on) Music.start(); else Music.stop(); } }
 function connectToMaster(node) { if (compressor) node.connect(compressor); else node.connect(audioCtx.destination); }
@@ -953,7 +1043,27 @@ const Music = {
     else if (name==='orbit') this.progression=['Cmaj7','Am7','Fmaj7','Gmaj7'];
     else if (name==='surface') this.progression=['Dmaj7','Bm7','Gmaj7','Am7'];
     else this.progression=['Am7','Fmaj7','Cmaj7','Gmaj7']; },
-  _tick(){ if (!this.started||!this.ctx) return; const cfg=this.trackConfig[this.track]; const now=this.ctx.currentTime; while (this.nextStepTime<now+0.4) { this._scheduleStep(this.nextStepTime,this.stepIndex,cfg); this.nextStepTime+=cfg.step; this.stepIndex++; } },
+  _tick(){
+    if (!this.started||!this.ctx) return;
+    // Guarda crítica: se o AudioContext está suspenso (autoplay policy
+    // antes do primeiro gesto), NÃO agendar nada. Sem isso, cada nota
+    // criada no contexto suspenso emite um warning "AudioContext was
+    // prevented from starting automatically" e o console enche em
+    // segundos. Quando o patch 05 resumir o contexto via gesture, o
+    // scheduler volta a produzir som sozinho.
+    if (this.ctx.state !== 'running') return;
+    const cfg=this.trackConfig[this.track];
+    const now=this.ctx.currentTime;
+    // Se nextStepTime ficou muito para trás (contexto suspenso por
+    // muito tempo e resume com salto), reancoramos em vez de disparar
+    // um burst de notas atrasadas.
+    if (this.nextStepTime < now - 0.5) this.nextStepTime = now + 0.05;
+    while (this.nextStepTime<now+0.4) {
+      this._scheduleStep(this.nextStepTime,this.stepIndex,cfg);
+      this.nextStepTime+=cfg.step;
+      this.stepIndex++;
+    }
+  },
   _scheduleStep(when,step,cfg){ const bar=Math.floor(step/16)%this.progression.length; const inBar=step%16; const chord=this.chords[this.progression[bar]];
     if (inBar===0 && step%cfg.padEvery===0) this._pad(chord,when,cfg.step*cfg.padEvery+1.5);
     if (step%cfg.bassEvery===0) this._bass(chord[0]/2,when,cfg.step*cfg.bassEvery*0.9);
@@ -1160,7 +1270,10 @@ function generateGalaxy(ucx, ucy) {
   const ageRoll = rng();
   const age = ageRoll < 0.30 ? 'jovem' : ageRoll < 0.75 ? 'intermediaria' : 'velha';
   const density = 0.35 + rng() * 0.65;
-  const arms = 2 + Math.floor(rng()*4);
+  // Espirais barradas têm quase sempre 2 braços na natureza (SBa/SBb/SBc).
+  // renderGalaxyArt já forçava 2; agora generateGalaxy também — mantendo
+  // o RNG determinístico porque as chamadas seguintes a rng() continuam.
+  const arms = (type === 'espiral_barrada') ? 2 : (2 + Math.floor(rng()*4));
   const armWidth = 0.10 + rng()*0.20;
   const barLen = type === 'espiral_barrada' ? 0.22 + rng()*0.28 : 0;
   const tiltAngle = rng()*Math.PI*2;
@@ -1236,9 +1349,10 @@ function galaxyAge() { return currentGalaxy ? currentGalaxy.age : 'intermediaria
 // Raio de exploração local (em unidades de mundo), separado do raio visual
 function explorationRadius() {
   if (!currentGalaxy) return 5000;
-  // Raio de exploração gigantesco: gera dezenas de milhões de estrelas
-  // por galáxia. Tudo é hasheado on-demand; nada é guardado em memória.
-  return Math.min(currentGalaxy.radius * 40, 500000);
+  // [Patch 09 - Item 7 A1] Reduzido para 2.5x o raio da galáxia.
+  // Demake 2D: a arte do mapa e a distribuição de estrelas devem
+  // ser coerentes espacialmente, sem milhões de estrelas invisíveis.
+  return Math.min(currentGalaxy.radius * 2.5, 100000);
 }
 
 function makeName(rng) {
@@ -1277,8 +1391,9 @@ function starDensityAt(wx, wy) {
     // Arte: r = u^1.8 concentrado + halo. Gaussian mais larga + cauda fraca.
     p = Math.exp(-en * en * 2.5) + Math.exp(-en * 0.9) * 0.12;
   } else if (type === 'espiral' || type === 'espiral_barrada') {
-    const arms  = currentGalaxy.arms  || 2;
-    const pitch = currentGalaxy.pitch || 0.25;
+    // --- Sincronizado com renderGalaxyArt (Patch 07) ---
+    const arms  = (type === 'espiral_barrada') ? 2 : (currentGalaxy.arms || 2);
+    const pitch = currentGalaxy.pitch || Math.tan(11 * Math.PI/180);
     const r0 = (type === 'espiral_barrada' && currentGalaxy.barLen)
       ? Math.max(0.12, currentGalaxy.barLen * 0.95) : 0.09;
     const ca = Math.cos(-(currentGalaxy.tiltAngle || 0)), sa = Math.sin(-(currentGalaxy.tiltAngle || 0));
@@ -1302,10 +1417,11 @@ function starDensityAt(wx, wy) {
     p = Math.max(bulge, armsTerm) + disk;
     if (type === 'espiral_barrada' && currentGalaxy.barLen) {
       const bl = currentGalaxy.barLen;
-      const bx = rwx / (er * Math.max(0.05, bl));
-      const by = rwy / (er * 0.055);
+      // Largura sincronizada com a arte (0.035 vs 0.055 antigo)
+      const bx = rwx / (er * Math.max(0.05, bl * 1.1));
+      const by = rwy / (er * 0.035);
       const bn = Math.hypot(bx, by);
-      p = Math.max(p, Math.exp(-bn * bn * 1.6) * 0.95);
+      p = Math.max(p, Math.exp(-bn * bn * 2.0) * 0.95);
     }
   } else if (type === 'irregular') {
     const blobs = galaxyBlobs(currentGalaxy);
@@ -1370,8 +1486,9 @@ function spectralBias(wx, wy) {
   if (type === 'quasar') return 0.05 + 0.15 * (1 - t);
 
   if (type === 'espiral' || type === 'espiral_barrada') {
-    const arms  = currentGalaxy.arms  || 2;
-    const pitch = currentGalaxy.pitch || 0.25;
+    // --- Sincronizado com renderGalaxyArt (Patch 07) ---
+    const arms  = (type === 'espiral_barrada') ? 2 : (currentGalaxy.arms || 2);
+    const pitch = currentGalaxy.pitch || Math.tan(11 * Math.PI/180);
     const r0 = (type === 'espiral_barrada' && currentGalaxy.barLen)
       ? Math.max(0.12, currentGalaxy.barLen * 0.95) : 0.09;
     const ca = Math.cos(-(currentGalaxy.tiltAngle || 0)), sa = Math.sin(-(currentGalaxy.tiltAngle || 0));
@@ -1384,7 +1501,7 @@ function spectralBias(wx, wy) {
     let armMod = 0;
     for (let k = 0; k < arms; k++) {
       const d = phase - (k / arms) * Math.PI * 2;
-      armMod = Math.max(armMod, Math.pow(Math.cos(d * arms * 0.5), 10));
+      armMod = Math.max(armMod, Math.pow(Math.max(0, Math.cos(d * arms * 0.5)), 10));
     }
     // Bojo: velho e denso. Braços: jovens (formação estelar ativa). Disco: misto.
     const inBulge = Math.exp(-t * t * 18.0);
@@ -1407,10 +1524,19 @@ function computeTeq(starTemp, starRadius, aAU, albedo) {
 }
 function tidalLockingDistance(starMass, aAU, planetSize) {
   // Anãs M têm HZ muito próxima → locking quase universal na HZ.
-  // Fórmula empírica: threshold ~ 0.45 * M^(1/3) * fator_de_tamanho
+  // Fórmula empírica: threshold ~ 0.20 * M^(1/3) * fator_de_tamanho
+  //
+  // Calibração com 0.20:
+  //   Sol (M=1.0):     ~0.24 AU → Mercúrio(0.39) e Vênus(0.72) NÃO locked ✓
+  //   M 0.3:           ~0.16 AU → HZ em 0.05-0.15 → locked ✓
+  //   M 0.1 (Proxima): ~0.09 AU → Proxima b (0.049) locked ✓
+  //
+  // Valor anterior (0.45) tornava Mercúrio e Vênus "locked", o que
+  // contradiz a dinâmica real (Mercúrio está em ressonância 3:2;
+  // Vênus tem rotação retrógrada de 243 dias).
   const mFactor = Math.pow(Math.max(0.05, starMass), 0.33);
   const sizeFactor = Math.max(0.5, planetSize * 0.4);
-  return 0.45 * mFactor * sizeFactor;
+  return 0.20 * mFactor * sizeFactor;
 }
 
 function makePlanets(rng, cx, cy, starRadius, temperature, starMass, isRogue, galaxyAgeName) {
@@ -1420,13 +1546,16 @@ function makePlanets(rng, cx, cy, starRadius, temperature, starMass, isRogue, ga
   const planets = [];
   for (let i = 0; i < pCount; i++) {
     const distance = 50 + i * 45 + rng() * 30;
-    const size = 2 + Math.floor(rng()*4);
+    const baseSize = 2 + Math.floor(rng()*4);
     let color = PALETTE.planets[Math.floor(rng()*PALETTE.planets.length)];
         const speed = 0.3 + (1.0 / (distance / 100));
     const phase = rng() * Math.PI * 2;
     let tr = rng();
     if (isRogue) tr = tr < 0.55 ? 0 : (tr < 0.85 ? 2 : 1);
     const type = tr < 0.4 ? 'ROCHOSO' : tr < 0.75 ? 'GASOSO' : 'GELADO';
+    // Gasosos têm tamanho real 12-27 R⊕ (Netuno a Saturno/Júpiter).
+    // Multiplicar o baseSize (2-5) mantém a semente original intacta.
+    const size = (type === 'GASOSO') ? (baseSize * 5 + 2) : baseSize;
     if (colorMode === 'realistic') {
       const cb = (v) => Math.max(0, Math.min(255, Math.round(v)));
       const hx = (r,g,b) => '#' + [r,g,b].map(v => cb(v).toString(16).padStart(2,'0')).join('');
@@ -1628,6 +1757,13 @@ function makePlanets(rng, cx, cy, starRadius, temperature, starMass, isRogue, ga
       planetClass: 'SELENA', seaLevel:0, snowLevel:0.5, tropicLat:0.5, icecapLat:1, heightTempGrad:0,
       vegColor: { r:80,g:80,b:80,name:'—' } });
   }
+  // [Patch 10 - FIX 1] Default orbitTarget para TODOS os planetas.
+  // Sistemas especiais (NS, WD, BD) retornam de generateSystem ANTES
+  // do loop de P-type/S-type, então antes deste patch seus planetas
+  // ficavam com orbitTarget undefined e não entravam no F6.
+  // Rogue recebe 'rogue' (não orbitam estrela real).
+  // Sistemas normais ainda sobrescrevem isto no loop abaixo.
+  for (const p of planets) p.orbitTarget = isRogue ? 'rogue' : 'primary';
   return planets;
 }
 
@@ -1800,36 +1936,47 @@ function generateSystem(cx, cy) {
       separation: 1.5 + rng()*4.5, angle: rng()*Math.PI*2, speed: 0.15 + rng()*0.5 };
   }
 
-  // Construir a hierarquia determinística (até 8 estrelas, usando rng())
-  let companion = null;
+  // [Patch 09 - Item 5] Árvore binária hierárquica real.
+  // Estrutura: A-B, C-D orbita AB, E-F orbita CD, G-H orbita EF.
+  // astronomicamente estável e geometricamente coerente.
   let maxCompanions = 0;
-  if (hierarchyLevel === 1) maxCompanions = 1; // Binária (2 estrelas)
-  else if (hierarchyLevel === 2) maxCompanions = 2 + Math.floor(rng() * 2); // Trio/Quad (3-4 estrelas)
-  else if (hierarchyLevel === 3) maxCompanions = 4 + Math.floor(rng() * 4); // Múltipla (5-8 estrelas)
+  if (hierarchyLevel === 1) maxCompanions = 1;
+  else if (hierarchyLevel === 2) maxCompanions = 2 + Math.floor(rng() * 2);
+  else if (hierarchyLevel === 3) maxCompanions = 4 + Math.floor(rng() * 4);
 
-  let currentComp = null;
+  const primaryStar = {
+    starType, starColor, starRadius: visualRadius, temperature, mass, radius,
+    lumClass: lumClass.cls, metallicity,
+    isBlackHole: false, isNeutronStar: false, isWhiteDwarf: false, isBrownDwarf: false,
+    label: 'A'
+  };
+  const hierarchy = [{ star: primaryStar, parent: null, sep: 0, angle: 0, speed: 0 }];
+  const stars = [primaryStar];
+
   for (let i = 0; i < maxCompanions; i++) {
-    const newComp = makeCompanionStar(false);
-    if (!companion) {
-      companion = newComp;
-      currentComp = companion;
-    } else {
-      currentComp.companion = newComp;
-      currentComp = newComp;
-    }
+    const c = makeCompanionStar(false);
+    c.label = String.fromCharCode(66 + i); // B, C, D, E, F, G, H
+    // Parentesco binário: pai de cada estrela segue a árvore A-B, C-D(AB), E-F(CD), G-H(EF)
+    let parent = 0;
+    if (i >= 1) parent = Math.floor((i - 1) / 2) * 2 + 1;
+    const sepBase = c.separation * 1.5 + parent * 1.5;
+    hierarchy.push({ star: c, parent, sep: sepBase, angle: c.angle, speed: c.speed });
+    stars.push(c);
   }
 
-  // Decidir se cada planeta orbita uma estrela específica (S-type)
-  // ou o baricentro (P-type)
+  // [Patch 09b - hotfix] P-type (baricentro) vs S-type (estrela).
+  // A separação 'sep' em hierarchy[i] é inflacionada por * 1.5 (escala
+  // visual). Para o limiar de estabilidade orbital (que é em AU), usamos
+  // a separação da companheira mais interna (hierarchy[1]) normalizada de
+  // volta à escala AU original. O multiplicador 1.5 restaura o
+  // comportamento do código pré-patch 09 (que usava c.separation * 1.5).
+  const innerSep = (hierarchy.length > 1) ? hierarchy[1].sep / 1.5 : 0;
   for (const p of planets) {
     if (hierarchyLevel === 0) { p.orbitTarget = 'primary'; continue; }
-    // P-type: planetas distantes (após o "critical distance")
-    const sepAU = companion ? companion.separation : 10;
-    const pTypeThreshold = sepAU * 1.5;  // distância mínima para estabilidade
+    const pTypeThreshold = innerSep * 1.5;
     if (parseFloat(p.distanceAU) > pTypeThreshold) {
       p.orbitTarget = 'barycenter';
     } else {
-      // S-type: orbita a estrela mais massiva (primária ou companheira)
       p.orbitTarget = rng() < 0.7 ? 'primary' : 'companionA';
     }
   }
@@ -1837,7 +1984,7 @@ function generateSystem(cx, cy) {
   return { cx, cy, worldX: wx, worldY: wy, name: makeName(rng),
     starType, starColor, starRadius: visualRadius, temperature, mass, radius, lumClass: lumClass.cls, metallicity,
     isBlackHole:false, isNeutronStar:false, isWhiteDwarf:false, isBrownDwarf:false, isRogue:false,
-    companion, hierarchyLevel, planets };
+    hierarchy, stars, hierarchyLevel, planets };
 }
 
 const systemCache = new Map();
@@ -2071,8 +2218,10 @@ function getPlanetScreenPositions(sys, time) {
     const p = sys.planets[i];
     const a = p.phase + time * 0.001 * p.speed;
     const r = p.distance * geo.orbitScale;
+    // Compensa o 'size' 12-27 dos gasosos para não virarem bolhas gigantes na visão do sistema.
+    const visSize = p.type === 'GASOSO' ? p.size * 0.5 : p.size;
     out.push({ index:i, planet:p, px: geo.sx + Math.cos(a)*r, py: geo.sy + Math.sin(a)*r*0.4,
-      ps: Math.max(4, Math.round(p.size * geo.orbitScale)) });
+      ps: Math.max(4, Math.round(visSize * geo.orbitScale)) });
   }
   return out;
 }
@@ -3140,23 +3289,30 @@ function drawSystemVisual(sys, dist, time) {
     gctx.beginPath(); gctx.arc(sx, sy, gr, 0, Math.PI*2); gctx.fill();
     gctx.fillStyle = col;
     gctx.beginPath(); gctx.arc(sx, sy, finalStarSize, 0, Math.PI*2); gctx.fill();
-    let cNode = sys.companion;
-    let cIdx = 1;
-    while (cNode) {
-      const c = cNode;
-      const a = c.angle + (cIdx * 0.8) + time*0.0008*c.speed;
-      const off = c.separation * (1 + focusBlend*1.5) * cIdx;
-      const csx = sx + Math.cos(a)*off, csy = sy + Math.sin(a)*off*0.5;
-      const csr = c.starRadius, cgr = csr*5+4;
-      const ccol = colorMode === 'realistic' ? (PALETTE.starColors[c.starType] || c.starColor) : c.starColor;
-      const cg = gctx.createRadialGradient(csx, csy, 0, csx, csy, cgr);
-      cg.addColorStop(0, ccol); cg.addColorStop(0.4, ccol+'66'); cg.addColorStop(1, 'transparent');
-      gctx.fillStyle = cg;
-      gctx.beginPath(); gctx.arc(csx, csy, cgr, 0, Math.PI*2); gctx.fill();
-      gctx.fillStyle = ccol;
-      gctx.beginPath(); gctx.arc(csx, csy, csr, 0, Math.PI*2); gctx.fill();
-      cNode = cNode.companion;
-      cIdx++;
+    // [Patch 09 - Item 5] Renderiza a árvore hierárquica recursivamente
+    if (sys.hierarchy) {
+      const drawNode = (idx, parentX, parentY) => {
+        const h = sys.hierarchy[idx];
+        const c = h.star;
+        const a = h.angle + time*0.0008*h.speed;
+        const off = h.sep * (1 + focusBlend*1.5) * 2.0;
+        const csx = parentX + Math.cos(a)*off;
+        const csy = parentY + Math.sin(a)*off*0.5;
+        const csr = c.starRadius, cgr = csr*5+4;
+        const ccol = colorMode === 'realistic' ? (PALETTE.starColors[c.starType] || c.starColor) : c.starColor;
+        const cg = gctx.createRadialGradient(csx, csy, 0, csx, csy, cgr);
+        cg.addColorStop(0, ccol); cg.addColorStop(0.4, ccol+'66'); cg.addColorStop(1, 'transparent');
+        gctx.fillStyle = cg;
+        gctx.beginPath(); gctx.arc(csx, csy, cgr, 0, Math.PI*2); gctx.fill();
+        gctx.fillStyle = ccol;
+        gctx.beginPath(); gctx.arc(csx, csy, csr, 0, Math.PI*2); gctx.fill();
+        for (let j = 0; j < sys.hierarchy.length; j++) {
+          if (sys.hierarchy[j].parent === idx) drawNode(j, csx, csy);
+        }
+      };
+      for (let i = 0; i < sys.hierarchy.length; i++) {
+        if (sys.hierarchy[i].parent === 0) drawNode(i, sx, sy);
+      }
     }
   }
   const showP = isFocused ? focusBlend > 0.05 : normalZoom > 0.4;
@@ -3360,7 +3516,9 @@ function drawRingsOrbit(cx, cy, R, planet, clipAbove) {
 function drawOrbitView(time) {
   if (!orbitState) return;
   const { planet, blend } = orbitState;
-  drawPlanetBody(planet, BASE_W/2, BASE_H/2 - 6, Math.max(2, Math.round((42 + planet.size*6) * blend)), time);
+  // Tamanho visual: log-escala para gasosos (não estourar a tela), linear para rochosos.
+  const baseR = planet.type === 'GASOSO' ? (30 + Math.log2(planet.size) * 10) : (42 + planet.size * 6);
+  drawPlanetBody(planet, BASE_W/2, BASE_H/2 - 6, Math.max(2, Math.round(baseR * blend)), time);
 }
 // Desenho único do globo planetário (usado pela órbita E pelo telescópio),
 // para que o planeta observado seja exatamente o que será visitado.
@@ -4138,28 +4296,36 @@ function getSurfaceSuns(sys, planet) {
       sr: clamp(2.4*Math.pow(rad/dAU, 0.55), 1.3, 16), inten: 1, hourOff: 0, worldAz: 0.4 }, extra);
   };
   const out = [ mk(sys.temperature, sys.radius, aAU, { label:'A', type:sys.starType, inten: sys.isBrownDwarf ? 0.35 : 1 }) ];
-  // Percorre a cadeia hierárquica de companheiras (B, C, D, …) — todas no céu
-  let c = sys.companion, labelIdx = 1, sepCum = 1.0;
-  const labels = ['B','C','D','E','F','G','H'];
-  while (c && labelIdx < labels.length) {
-    const sepAU = sepCum * 30 * Math.pow(6.7, clamp((c.separation - 8)/12, 0, 1));
-    sepCum *= 1.5;
-    const phi = (planet.phase || 0) + labelIdx * 0.7;
-    const px = aAU*Math.cos(phi), py = aAU*Math.sin(phi);
-    const dPx = -px, dPy = -py;
-    const dCx = sepAU*Math.cos(c.angle || 0) - px, dCy = sepAU*Math.sin(c.angle || 0) - py;
-    const dC = Math.hypot(dCx, dCy);
-    const th = Math.acos(clamp((dPx*dCx + dPy*dCy) / (Math.hypot(dPx, dPy)*dC || 1), -1, 1));
-    const sgn = (dPx*dCy - dPy*dCx) >= 0 ? 1 : -1;
-    let crad;
-    if (c.isBrownDwarf) crad = 0.09;
-    else if (c.isNeutronStar) crad = 0.00002;
-    else if (c.isBlackHole) crad = 0.00003;
-    else { const rd = (STAR_DATA[c.starType] || STAR_DATA.M).radiusRange; crad = (rd[0] + rd[1]) / 2; }
-    const cType = c.isNeutronStar ? 'NS' : c.isBlackHole ? 'BH' : c.isBrownDwarf ? (c.starType + '(BD)') : c.starType;
-    out.push(mk(c.temperature || 3000, crad, dC, { label: labels[labelIdx], type: cType, hourOff: sgn*th, worldAz: 0.4 + sgn*th }));
-    c = c.companion;
-    labelIdx++;
+  // [Patch 09 - Item 5] Percorre a árvore hierárquica. Cada estrela
+  // recebe coordenadas no céu relativas ao planeta, baseadas na árvore.
+  if (sys.hierarchy) {
+    const calcPos = (idx) => {
+      const h = sys.hierarchy[idx];
+      if (h.parent === null) return { x: 0, y: 0 };
+      const p = calcPos(h.parent);
+      const a = h.angle + (planet.phase || 0) * 0.1;
+      const sepAU = h.sep * 2.5;
+      return { x: p.x + Math.cos(a) * sepAU, y: p.y + Math.sin(a) * sepAU };
+    };
+    for (let i = 1; i < sys.hierarchy.length; i++) {
+      const h = sys.hierarchy[i];
+      const c = h.star;
+      const pos = calcPos(i);
+      const phi = (planet.phase || 0) + i * 0.7;
+      const px = aAU*Math.cos(phi), py = aAU*Math.sin(phi);
+      const dPx = -px, dPy = -py;
+      const dCx = pos.x - px, dCy = pos.y - py;
+      const dC = Math.hypot(dCx, dCy);
+      const th = Math.acos(clamp((dPx*dCx + dPy*dCy) / (Math.hypot(dPx, dPy)*dC || 1), -1, 1));
+      const sgn = (dPx*dCy - dPy*dCx) >= 0 ? 1 : -1;
+      let crad;
+      if (c.isBrownDwarf) crad = 0.09;
+      else if (c.isNeutronStar) crad = 0.00002;
+      else if (c.isBlackHole) crad = 0.00003;
+      else { const rd = (STAR_DATA[c.starType] || STAR_DATA.M).radiusRange; crad = (rd[0] + rd[1]) / 2; }
+      const cType = c.isNeutronStar ? 'NS' : c.isBlackHole ? 'BH' : c.isBrownDwarf ? (c.starType + '(BD)') : c.starType;
+      out.push(mk(c.temperature || 3000, crad, dC, { label: c.label, type: cType, hourOff: sgn*th, worldAz: 0.4 + sgn*th }));
+    }
   }
   return out;
 }
@@ -4404,7 +4570,7 @@ function drawSystemLabel(sys, dist, time) {
     else if (sys.isWhiteDwarf) { nmColor = PALETTE.whitedwarf; tag = 'ANÃ BRANCA'; tagColor = 'rgba(200,220,255,0.7)'; }
     else if (sys.isBrownDwarf) { nmColor = PALETTE.brownDwarf; tag = 'ANÃ MARROM ' + sys.starType; tagColor = 'rgba(200,120,100,0.75)'; }
     else if (sys.isRogue) { nmColor = PALETTE.rogue; tag = 'ÓRFÃO'; tagColor = 'rgba(180,200,220,0.7)'; }
-    else { nmColor = isVisited ? PALETTE.near[3] : PALETTE.hud; tag = sys.starType + sys.lumClass + (sys.companion ? ' +B' : ''); tagColor = PALETTE.hudDim; }
+    else { nmColor = isVisited ? PALETTE.near[3] : PALETTE.hud; tag = sys.starType + sys.lumClass + ((sys.hierarchy && sys.hierarchy.length > 1) ? ' +' + (sys.hierarchy.length - 1) : ''); tagColor = PALETTE.hudDim; }
     uctx.fillStyle = nmColor;
     uctx.fillText(getDisplayName(sys), sx, sy - finalStarSize - 6);
     uctx.fillStyle = tagColor;
@@ -4487,19 +4653,18 @@ function drawFocusPanel() {
     uctx.fillText('Planetas: ' + sys.planets.length, x+3, cy); cy += 6;
     if (sys.hierarchyLevel && sys.hierarchyLevel > 0) {
       let hInfo = 'Sist. ' + ['single','binário','triplo','múltiplo'][Math.min(3, sys.hierarchyLevel)];
-      let cNode = sys.companion;
-      let cCount = 0;
-      let cTags = new Set();
-      while (cNode) {
-        cCount++;
-        let cTag = cNode.starType;
-        if (cNode.isBrownDwarf) cTag = 'BD';
-        else if (cNode.isNeutronStar) cTag = 'NS';
-        else if (cNode.isBlackHole) cTag = 'BH';
-        cTags.add(cTag);
-        cNode = cNode.companion;
+      const cCount = sys.hierarchy ? sys.hierarchy.length - 1 : 0;
+      if (cCount > 0) {
+        const cTags = new Set();
+        for (let i = 1; i < sys.hierarchy.length; i++) {
+          let cTag = sys.hierarchy[i].star.starType;
+          if (sys.hierarchy[i].star.isBrownDwarf) cTag = 'BD';
+          else if (sys.hierarchy[i].star.isNeutronStar) cTag = 'NS';
+          else if (sys.hierarchy[i].star.isBlackHole) cTag = 'BH';
+          cTags.add(cTag);
+        }
+        hInfo += ' +' + cCount + ' (' + Array.from(cTags).join(',') + ')';
       }
-      if (cCount > 0) hInfo += ' +' + cCount + ' (' + Array.from(cTags).join(',') + ')';
       uctx.fillStyle = '#ffd070';
       uctx.fillText(hInfo, x+3, cy); cy += 6;
     }
@@ -5127,8 +5292,11 @@ function drawPlanetInfo(time) {
     rows.push(['TRAV. MARÉ', p.tidalLocked ? 'Sim' : 'Não']);
     if (p.tidalLocked) rows.push(['TERMINADOR', (p.temperatureDay + p.temperatureNight)/2 + ' K']);
     rows.push(['EXCENTRICIDADE', (0.05 + ((p.phase*100)%30)/100).toFixed(3)]);
-    rows.push(['MASSA (M⊕)', (p.size / 3).toFixed(2)]);
-    rows.push(['RAIO (R⊕)', (p.size / 3).toFixed(2)]);
+    // Cálculo realista: Rochosos M ~ R^3, Gasosos M ~ R^2.4 (equação de estado)
+    const rEarth = p.size / 3;
+    const mEarth = p.type === 'GASOSO' ? Math.pow(rEarth, 2.4) : Math.pow(rEarth, 3.0);
+    rows.push(['MASSA (M⊕)', mEarth >= 100 ? mEarth.toFixed(0) : mEarth.toFixed(1)]);
+    rows.push(['RAIO (R⊕)', rEarth.toFixed(2)]);
   } else if (pi.tab === 3) {
     rows.push(['COBERTURA DE ÁGUA', ((p.waterFrac||0)*100).toFixed(1) + '%']);
     rows.push(['NÍVEL DO MAR', ((p.seaLevel||0)*100).toFixed(1) + '%']);
@@ -5316,7 +5484,7 @@ function sbEvaluateSystem(sys) {
   let available = 0;
   const seen = new Set();
   if (sys.starType && !sys.isRogue) available++;
-  if (sys.companion) available++;
+  if (sys.hierarchy && sys.hierarchy.length > 1) available += sys.hierarchy.length - 1;
   const matchedKeys = new Set();
   for (const p of sys.planets) {
     const kind = getPlanetVisualKind(p);
@@ -5416,7 +5584,7 @@ function sbPerformSearch() {
       distance: dLy,
       luminosity: sbLuminosity(sys),
       appMag: sbAppMag(sys, dLy),
-      stars: sys.companion ? 2 : 1,
+      stars: sys.hierarchy ? sys.hierarchy.length : 1,
       planets: sys.planets.length,
       matched: ev.matched,
       available: ev.available,
@@ -5666,7 +5834,7 @@ function sbHandleMouseClick(sx, sy) {
 
 // Debug F6: estatísticas de sistemas múltiplos na vizinhança
 function debugSystemStats() {
-  console.log('%c=== DEBUG F6: ESTATÍSTICAS DE SISTEMAS ===', 'color:#ffe080;font-weight:bold');
+  console.group('%c=== DEBUG F6: ESTATÍSTICAS DE SISTEMAS ===', 'color:#ffe080;font-weight:bold');
   const N = 5000;
   const cellR = Math.ceil(Math.sqrt(N) / 2);
   const cx0 = Math.round(ship.x / SYSTEM_RADIUS);
@@ -5677,7 +5845,7 @@ function debugSystemStats() {
     single: 0, binary: 0, triple: 0, quad: 0, multi5plus: 0,
     companionTypes: { M:0, K:0, G:0, F:0, A:0, BD:0, NS:0, BH:0, other:0 },
     hierarchyLevels: [0,0,0,0],
-    pType: 0, sType: 0,
+    pType: 0, sType: 0, rogueP: 0, orphanP: 0,
     examples: { BD:null, NS:null, BH:null, quadPlus:null },
     planetClasses: {},
     superEarthCount: 0,
@@ -5692,39 +5860,50 @@ function debugSystemStats() {
     if (sys.isEmpty) { stats.empty++; continue; }
     stats.total++;
     const lvl = sys.hierarchyLevel || 0;
-    stats.hierarchyLevels[lvl]++;
-    let totalStars = 1;
-    let cNode = sys.companion;
-    while (cNode) { totalStars++; cNode = cNode.companion; }
+    let totalStars = sys.hierarchy ? sys.hierarchy.length : 1;
     stats.starCounts = stats.starCounts || {};
     stats.starCounts[totalStars] = (stats.starCounts[totalStars] || 0) + 1;
 
-    if (lvl === 0) stats.single++;
-    else if (lvl === 1) stats.binary++;
-    else if (lvl === 2) stats.triple++;
-    else if (lvl === 3) {
-      if (totalStars >= 5) stats.multi5plus++;
-      else stats.quad++;
+    // Primárias "especiais" — não são estrelas normais e não
+    // devem inflar a contagem de "single star".
+    if (sys.isSupermassive)       stats.primarySMBH  = (stats.primarySMBH  || 0) + 1;
+    else if (sys.isBlackHole)     stats.primaryBH    = (stats.primaryBH    || 0) + 1;
+    else if (sys.isNeutronStar)   stats.primaryNS    = (stats.primaryNS    || 0) + 1;
+    else if (sys.isWhiteDwarf)    stats.primaryWD    = (stats.primaryWD    || 0) + 1;
+    else if (sys.isRogue)         stats.primaryRogue = (stats.primaryRogue || 0) + 1;
+    else if (sys.isBrownDwarf)    stats.primaryBD    = (stats.primaryBD    || 0) + 1;
+    else {
+      stats.hierarchyLevels[lvl]++;
+      if (lvl === 0) stats.single++;
+      else if (lvl === 1) stats.binary++;
+      else if (lvl === 2) stats.triple++;
+      else if (lvl === 3) {
+        if (totalStars >= 5) stats.multi5plus++;
+        else stats.quad++;
+      }
     }
-    // Contar tipo de companheiro
-    if (sys.companion) {
-      const c = sys.companion;
-      let key = c.starType;
-      if (c.isBrownDwarf) key = 'BD';
-      else if (c.isNeutronStar) key = 'NS';
-      else if (c.isBlackHole) key = 'BH';
-      if (key in stats.companionTypes) stats.companionTypes[key]++;
-      else stats.companionTypes.other++;
-      // Salvar exemplos
-      if (c.isBrownDwarf && !stats.examples.BD) stats.examples.BD = sys.name + ' (' + sys.starType + lvl + ' + BD)';
-      if (c.isNeutronStar && !stats.examples.NS) stats.examples.NS = sys.name + ' (' + sys.starType + lvl + ' + NS)';
-      if (c.isBlackHole && !stats.examples.BH) stats.examples.BH = sys.name + ' (' + sys.starType + lvl + ' + BH)';
-      if (lvl >= 3 && !stats.examples.quadPlus) stats.examples.quadPlus = sys.name;
+    // Contar tipos de companheira via árvore
+    if (sys.hierarchy) {
+      for (let i = 1; i < sys.hierarchy.length; i++) {
+        const c = sys.hierarchy[i].star;
+        let key = c.starType;
+        if (c.isBrownDwarf) key = 'BD';
+        else if (c.isNeutronStar) key = 'NS';
+        else if (c.isBlackHole) key = 'BH';
+        if (key in stats.companionTypes) stats.companionTypes[key]++;
+        else stats.companionTypes.other++;
+        if (c.isBrownDwarf && !stats.examples.BD) stats.examples.BD = sys.name + ' (' + sys.starType + lvl + ' + BD)';
+        if (c.isNeutronStar && !stats.examples.NS) stats.examples.NS = sys.name + ' (' + sys.starType + lvl + ' + NS)';
+        if (c.isBlackHole && !stats.examples.BH) stats.examples.BH = sys.name + ' (' + sys.starType + lvl + ' + BH)';
+        if (lvl >= 3 && !stats.examples.quadPlus) stats.examples.quadPlus = sys.name;
+      }
     }
     // Contar orbitTarget dos planetas E classes planetárias
     for (const p of sys.planets || []) {
       if (p.orbitTarget === 'barycenter') stats.pType++;
       else if (p.orbitTarget === 'primary' || p.orbitTarget === 'companionA') stats.sType++;
+      else if (p.orbitTarget === 'rogue') stats.rogueP++;
+      else stats.orphanP++;
       const pc = p.planetClass || p.type || '?';
       stats.planetClasses[pc] = (stats.planetClasses[pc] || 0) + 1;
       if (pc === 'SUPERTERRA') {
@@ -5737,13 +5916,29 @@ function debugSystemStats() {
       }
     }
   }
-  const pct = (v) => (100 * v / Math.max(1, stats.total)).toFixed(2) + '%';
-  console.log('%cSistemas:', 'color:#a8c8ff', stats.total + ' (vazios: ' + stats.empty + ')');
-  console.log('%cMultiplicidade:', 'color:#a8c8ff');
-  console.log('  Single  (1 estrela): ' + stats.hierarchyLevels[0] + '  (' + pct(stats.hierarchyLevels[0]) + ')');
-  console.log('  Binária (2 estrelas): ' + stats.hierarchyLevels[1] + '  (' + pct(stats.hierarchyLevels[1]) + ')');
-  console.log('  Trio/Quad (3-4):      ' + stats.hierarchyLevels[2] + '  (' + pct(stats.hierarchyLevels[2]) + ')');
-  console.log('  Multi 5+ (até 8):     ' + stats.hierarchyLevels[3] + '  (' + pct(stats.hierarchyLevels[3]) + ')');
+  const starSystems = stats.single + stats.binary + stats.triple + stats.quad + stats.multi5plus;
+  const specials = stats.total - starSystems;
+  const pctStar = (v) => (100 * v / Math.max(1, starSystems)).toFixed(2) + '%';
+  console.log('%cSistemas:', 'color:#a8c8ff',
+    stats.total + ' totais  (' + starSystems + ' estelares + ' + specials + ' primárias especiais)  · vazios: ' + stats.empty);
+
+  const spBH  = stats.primaryBH    || 0;
+  const spNS  = stats.primaryNS    || 0;
+  const spWD  = stats.primaryWD    || 0;
+  const spBD  = stats.primaryBD    || 0;
+  const spRG  = stats.primaryRogue || 0;
+  const spSM  = stats.primarySMBH  || 0;
+  if (specials > 0) {
+    console.log('%cPrimárias especiais:', 'color:#ffd070',
+      'SMBH:' + spSM + '  BH:' + spBH + '  NS:' + spNS +
+      '  WD:' + spWD + '  BD:' + spBD + '  Rogue:' + spRG);
+  }
+
+  console.log('%cMultiplicidade (só estelares):', 'color:#a8c8ff');
+  console.log('  Single  (1 estrela): ' + stats.hierarchyLevels[0] + '  (' + pctStar(stats.hierarchyLevels[0]) + ')');
+  console.log('  Binária (2 estrelas): ' + stats.hierarchyLevels[1] + '  (' + pctStar(stats.hierarchyLevels[1]) + ')');
+  console.log('  Trio/Quad (3-4):      ' + stats.hierarchyLevels[2] + '  (' + pctStar(stats.hierarchyLevels[2]) + ')');
+  console.log('  Multi 5+ (até 8):     ' + stats.hierarchyLevels[3] + '  (' + pctStar(stats.hierarchyLevels[3]) + ')');
   console.log('%cDistribuição Exata de Estrelas:', 'color:#ff9060');
   for (const [num, count] of Object.entries(stats.starCounts || {}).sort((a,b) => a[0]-b[0])) {
     console.log('  ' + num + ' estrelas: ' + count + ' sistemas');
@@ -5759,17 +5954,22 @@ function debugSystemStats() {
   console.log('  BH: ' + (stats.examples.BH || '— nenhum na amostra'));
   console.log('  Quad+: ' + (stats.examples.quadPlus || '— nenhum na amostra'));
   console.log('%cÓrbitas dos planetas:', 'color:#a8c8ff');
-  console.log('  P-type (baricentro): ' + stats.pType + '  |  S-type (estrela): ' + stats.sType);
+  console.log('  P-type (baricentro): ' + stats.pType +
+              '  |  S-type (estrela): ' + stats.sType +
+              '  |  Rogue: ' + stats.rogueP +
+              '  |  Órfãos: ' + stats.orphanP);
   console.log('%cClasses planetárias (amostra):', 'color:#a8c8ff');
   const pcEntries = Object.entries(stats.planetClasses).sort((a,b) => b[1]-a[1]);
   for (const [k, v] of pcEntries) console.log('  ' + k + ': ' + v);
   console.log('%cSuper Terras encontradas: ' + stats.superEarthCount, 'color:#60ff90;font-weight:bold');
   for (const ex of stats.superEarthExamples) console.log('  Ex: ' + ex);
   console.log('%c=== FIM ===', 'color:#ffe080;font-weight:bold');
+  console.groupEnd();
   // Também mostra no HUD
   debug._f6Report = 'F6: ' + stats.total + ' sist · ' +
-    'BD:' + ct.BD + ' NS:' + ct.NS + ' BH:' + ct.BH +
-    ' · bin:' + stats.hierarchyLevels[1] + ' trio:' + stats.hierarchyLevels[2] +
+    'primárias(BH:' + spBH + ' NS:' + spNS + ' WD:' + spWD + ' BD:' + spBD + ' RG:' + spRG + ') · ' +
+    'companheiras(BD:' + ct.BD + ' NS:' + ct.NS + ' BH:' + ct.BH + ') · ' +
+    'bin:' + stats.hierarchyLevels[1] + ' trio:' + stats.hierarchyLevels[2] +
     ' multi:' + stats.hierarchyLevels[3] + ' · ST:' + stats.superEarthCount;
   debug._f6Until = performance.now() + 15000;
 }
@@ -5825,11 +6025,25 @@ const GamepadManager = {
   init() {
     window.addEventListener('gamepadconnected', (e) => {
       console.log('[Gamepad] Conectado:', e.gamepad.id);
-      this.pad = e.gamepad;
+      // NÃO setar this.pad aqui — deixar o poll() decidir por score.
+      // Se setarmos, um teclado 2.4G que se conecte DEPOIS do controle
+      // pode ficar "selecionado" por 1 frame antes do poll corrigir,
+      // perdendo um eventual botão apertado exatamente nesse frame.
+      // Zera os caches de botões para que a primeira pressão pós-
+      // reconnect sempre dispare (sem isso, a pressão é engolida).
+      this.prev = {};
+      this.lastFire = {};
     });
-    window.addEventListener('gamepaddisconnected', () => {
-      console.log('[Gamepad] Desconectado');
-      this.pad = null;
+    window.addEventListener('gamepaddisconnected', (e) => {
+      console.log('[Gamepad] Desconectado:', e.gamepad ? e.gamepad.id : '?');
+      // NÃO zerar this.pad aqui — o poll() da próxima frame
+      // escolhe outro pad (ou nenhum) pela heurística de score.
+      // Mas limpamos o estado de botões para o reconnected começar
+      // do zero, senão a primeira pressão pós-reconnect é engolida.
+      this.prev = {};
+      this.lastFire = {};
+      GP.up = GP.down = GP.left = GP.right = false;
+      GP.rt = GP.lt = 0;
     });
   },
 
@@ -5856,11 +6070,40 @@ const GamepadManager = {
 
   poll(dt) {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    let p = null;
-    for (let i = 0; i < pads.length; i++) if (pads[i] && pads[i].connected) { p = pads[i]; break; }
+    // ---- Seleção robusta de gamepad ----
+    // Chromium expõe teclados 2.4G como gamepads com mapping='' e sem
+    // eixos úteis. Quando o X-Box pad reconecta após window.prompt,
+    // pode cair em um slot de índice MAIOR que o teclado. Se pegarmos
+    // "o primeiro connected", pegamos o teclado e o controle morre.
+    //
+    // Score: mapping='standard' (XInput) vale muito; eixos e buttons
+    // contam como bônus. Um leve +1 se já era o pad escolhido antes
+    // evita flicker entre dois pads válidos quando ambos reconectam.
+    let p = null, bestScore = -1;
+    for (let i = 0; i < pads.length; i++) {
+      const pad = pads[i];
+      if (!pad || !pad.connected) continue;
+      let score = 0;
+      if (pad.mapping === 'standard') score += 100;
+      if (pad.axes && pad.axes.length >= 2) score += 10;
+      if (pad.buttons && pad.buttons.length >= 8) score += 5;
+      if (this.pad && pad.index === this.pad.index) score += 1;
+      if (score > bestScore) { bestScore = score; p = pad; }
+    }
     if (!p) {
       GP.up = GP.down = GP.left = GP.right = false; GP.rt = GP.lt = 0;
+      if (this.pad) { this.pad = null; this.prev = {}; this.lastFire = {}; }
       return;
+    }
+    // Se o pad selecionado mudou (reconnect, hot-swap, etc.),
+    // zera o cache de botões para edges dispararem de imediato.
+    if (!this.pad || p.index !== this.pad.index) {
+      if (this.pad) console.log('[Gamepad] Trocando para:', p.id,
+        '| index=' + p.index, '| mapping=' + JSON.stringify(p.mapping));
+      else console.log('[Gamepad] Usando:', p.id,
+        '| index=' + p.index, '| mapping=' + JSON.stringify(p.mapping));
+      this.prev = {};
+      this.lastFire = {};
     }
     this.pad = p;
     const b = p.buttons, a = p.axes;
@@ -6210,6 +6453,29 @@ if (musicEnabled) { ensureAudio(); Music.start(); }
 console.log('[Singularvs] seed=0x' + CURRENT_SEED.toString(16).toUpperCase());
 console.log('[Singularvs] Galáxia: ' + (currentGalaxy ? currentGalaxy.name + ' R=' + currentGalaxy.radius.toFixed(0) + 'u exploração R=' + explorationRadius().toFixed(0) + 'u' : '—'));
 console.log('[Singularvs] SYSTEM_RADIUS=' + SYSTEM_RADIUS + ' CELL=' + GALAXY_CELL);
+
+// ============================================================
+// DEBUG EXPOSURE — acessível via F12 Console como window.__sv
+// (adicionado pelo patch 08c)
+// ============================================================
+window.__sv = {
+  get ship()          { return ship; },
+  get camera()        { return camera; },
+  get currentGalaxy() { return currentGalaxy; },
+  get focusedSystem() { return focusedSystem; },
+  get orbitState()    { return orbitState; },
+  get screen()        { return screen; },
+  get visited()       { return visited; },
+  getSystem,
+  generateSystem,
+  getPlanetVisualKind,
+  getSystemGeometry,
+  explorationRadius,
+  starDensityAt,
+  spectralBias,
+};
+console.log('[Singularvs] Debug exposto em window.__sv');
+
 requestAnimationFrame(loop);
 })();
 </script>

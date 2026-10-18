@@ -1,3 +1,4 @@
 *.bak
 *.ptbr.bak
 devtest/
+*.bak.*
